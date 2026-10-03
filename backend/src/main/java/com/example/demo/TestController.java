@@ -5,6 +5,7 @@ import com.example.demo.service.ChunkManagerService;
 import modell.NetworkMessage;
 import modell.SharedFile;
 import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 
 import java.io.File;
@@ -15,6 +16,7 @@ import java.sql.SQLException;
 import java.util.Arrays;
 import java.util.Map;
 
+@RequestMapping("/api/test")
 @RestController
 public class TestController {
 
@@ -26,7 +28,7 @@ public class TestController {
         this.networkService = networkService;
     }
 
-    @GetMapping("/api/test/chunking")
+    @GetMapping("/chunking")
     public Map<String, Object> testChunking() throws IOException, SQLException {
         File testFile = new File("test-sample.bin");
         byte[] dummyData = new byte[2500 * 1024];
@@ -52,7 +54,7 @@ public class TestController {
         );
     }
 
-    @GetMapping("/api/test/tcp-hello")
+    @GetMapping("/tcp-hello")
     public Map<String, Object> testTcpHello() throws IOException {
         NetworkMessage ping = new NetworkMessage("HELLO", "test-client", "Ping handshake");
         String rawResponse = networkService.sendDirectMessage("127.0.0.1", 9001, ping);

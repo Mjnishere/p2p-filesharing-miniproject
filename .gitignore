@@ -1,0 +1,36 @@
+# Compiled class files & build directories
+**/target/
+*.class
+
+# SQLite Database files
+*.db
+*.db-journal
+**/*.db
+**/*.db-journal
+
+# Runtime chunk storage and generated binaries
+**/peer-data/
+peer-data/
+*.bin
+**/*.bin
+
+# Logs
+*.log
+
+# Package / OS files
+.DS_Store
+Thumbs.db
+
+# IDE and Editor files
+.idea/
+*.iml
+.vscode/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
+
+# Node modules (for upcoming frontend)
+**/node_modules/
+**/dist/

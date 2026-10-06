@@ -22,7 +22,7 @@ public class ChunkManagerService {
 
     public static final int CHUNK_SIZE = 1024 * 1024; // 1 MB
 
-    @Value("${db.url}")
+    @Value("${db.url:jdbc:sqlite:peer.db}")
     private String dbUrl;
 
     private final Path storageRoot = Paths.get("peer-data", "chunks");

@@ -12,6 +12,8 @@ import java.io.DataOutputStream;
 import java.io.IOException;
 import java.net.ServerSocket;
 import java.net.Socket;
+import java.util.Collections;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
@@ -30,20 +32,8 @@ public class NetworkService {
     private final ObjectMapper objectMapper = new ObjectMapper();
     private volatile boolean isRunning = true;
 
-    // Active outbound peer connections (peerId -> DataOutputStream)
-    private final ConcurrentHashMap<String, DataOutputStream> activeOutbound = new ConcurrentHashMap<>();
-
-    private void trackOutboundConnection(String peerKey, DataOutputStream outputStream) {
-        if (peerKey != null && !peerKey.isBlank() && outputStream != null) {
-            activeOutbound.put(peerKey, outputStream);
-        }
-    }
-
-    private void untrackOutboundConnection(String peerKey) {
-        if (peerKey != null && !peerKey.isBlank()) {
-            activeOutbound.remove(peerKey);
-        }
-    }
+    // Slide 4: Visited / request cache to suppress duplicate searches
+    private final Set<String> processedRequestIds = Collections.newSetFromMap(new ConcurrentHashMap<>());
 
     @PostConstruct
     public void startServer() {
@@ -71,37 +61,40 @@ public class NetworkService {
             while (isRunning && !socket.isClosed()) {
                 String rawJson = FramingUtil.readFrame(dis);
                 NetworkMessage msg = objectMapper.readValue(rawJson, NetworkMessage.class);
-                System.out.println(">>> Received TCP Message: [" + msg.getType() + "] from " + msg.getSenderPeerId());
 
-                // Respond to HELLO handshake
+                // Duplicate Request Suppression (Slide 4 & 8)
+                if (msg.getRequestId() != null) {
+                    if (processedRequestIds.contains(msg.getRequestId())) {
+                        System.out.println(">>> Suppressed duplicate request: " + msg.getRequestId());
+                        continue;
+                    }
+                    processedRequestIds.add(msg.getRequestId());
+                }
+
+                // Protocol Handshake (Slide 3)
                 if ("HELLO".equals(msg.getType())) {
                     NetworkMessage reply = new NetworkMessage("HELLO_ACK", myPeerId, "Connection established");
                     FramingUtil.writeFrame(dos, objectMapper.writeValueAsString(reply));
                 }
             }
-        } catch (IOException e) {
-            // Socket closed or connection terminated by peer
+        } catch (IOException ignored) {
+            // Connection closed by peer
         }
     }
 
     public String sendDirectMessage(String targetIp, int targetPort, NetworkMessage message) throws IOException {
-        String peerKey = targetIp + ":" + targetPort;
         try (Socket socket = new Socket(targetIp, targetPort);
              DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
              DataInputStream dis = new DataInputStream(socket.getInputStream())) {
 
-            trackOutboundConnection(peerKey, dos);
-            try {
-                // Send framed JSON message
-                String rawJson = objectMapper.writeValueAsString(message);
-                FramingUtil.writeFrame(dos, rawJson);
-
-                // Read response
-                return FramingUtil.readFrame(dis);
-            } finally {
-                untrackOutboundConnection(peerKey);
-            }
+            String rawJson = objectMapper.writeValueAsString(message);
+            FramingUtil.writeFrame(dos, rawJson);
+            return FramingUtil.readFrame(dis);
         }
+    }
+
+    public boolean hasProcessed(String requestId) {
+        return processedRequestIds.contains(requestId);
     }
 
     @PreDestroy

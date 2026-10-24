@@ -13,20 +13,22 @@ import java.sql.Statement;
 public class DatabaseInitializer {
 
     @Value("${db.url}")
-private String dbUrl;
+    private String dbUrl;
 
     @PostConstruct
     public void init() {
         try (Connection conn = DriverManager.getConnection(dbUrl);
              Statement stmt = conn.createStatement()) {
 
-            // 1. peers table
+            // 1. peers table with both host and ip supported
             stmt.execute("""
                 CREATE TABLE IF NOT EXISTS peers (
                     peer_id TEXT PRIMARY KEY,
-                    ip TEXT NOT NULL,
+                    host TEXT NOT NULL DEFAULT '127.0.0.1',
+                    ip TEXT NOT NULL DEFAULT '127.0.0.1',
                     port INTEGER NOT NULL,
-                    status TEXT NOT NULL
+                    status TEXT NOT NULL DEFAULT 'CONNECTED',
+                    last_seen TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                 );
             """);
 
@@ -37,8 +39,7 @@ private String dbUrl;
                     name TEXT NOT NULL,
                     size_bytes INTEGER NOT NULL,
                     owner_peer_id TEXT NOT NULL,
-                    original_path TEXT NOT NULL,
-                    FOREIGN KEY (owner_peer_id) REFERENCES peers (peer_id)
+                    original_path TEXT NOT NULL
                 );
             """);
 

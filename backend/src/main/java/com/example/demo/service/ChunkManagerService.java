@@ -9,10 +9,7 @@ import java.io.*;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
-import java.sql.Connection;
-import java.sql.DriverManager;
-import java.sql.PreparedStatement;
-import java.sql.SQLException;
+import java.sql.*;
 import java.util.ArrayList;
 import java.util.List;
 import java.util.UUID;
@@ -112,6 +109,63 @@ public class ChunkManagerService {
 
             conn.commit();
         }
+    }
+
+    public byte[] getChunkBytes(String fileId, int chunkNo) throws IOException {
+        Path chunkPath = storageRoot.resolve(fileId).resolve(chunkNo + ".chunk");
+        if (!Files.exists(chunkPath)) {
+            return null;
+        }
+        return Files.readAllBytes(chunkPath);
+    }
+
+    public void saveChunkBytes(String fileId, int chunkNo, byte[] data) throws IOException {
+        Path fileChunkDir = storageRoot.resolve(fileId);
+        Files.createDirectories(fileChunkDir);
+        Path chunkPath = fileChunkDir.resolve(chunkNo + ".chunk");
+        Files.write(chunkPath, data);
+    }
+
+    public boolean hasChunk(String fileId, int chunkNo) {
+        Path chunkPath = storageRoot.resolve(fileId).resolve(chunkNo + ".chunk");
+        return Files.exists(chunkPath);
+    }
+
+    public List<SharedFile> getAllSharedFiles() {
+        List<SharedFile> list = new ArrayList<>();
+        String sql = "SELECT file_id, name, size_bytes, owner_peer_id, original_path FROM files";
+        try (Connection conn = DriverManager.getConnection(dbUrl);
+             Statement stmt = conn.createStatement();
+             ResultSet rs = stmt.executeQuery(sql)) {
+            while (rs.next()) {
+                list.add(new SharedFile(
+                        rs.getString("file_id"),
+                        rs.getString("name"),
+                        rs.getLong("size_bytes"),
+                        rs.getString("owner_peer_id"),
+                        rs.getString("original_path")
+                ));
+            }
+        } catch (SQLException e) {
+            System.err.println("Error fetching shared files: " + e.getMessage());
+        }
+        return list;
+    }
+
+    public int getTotalChunksForFile(String fileId) {
+        String sql = "SELECT COUNT(*) FROM chunks WHERE file_id = ?";
+        try (Connection conn = DriverManager.getConnection(dbUrl);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, fileId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return rs.getInt(1);
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error fetching chunk count: " + e.getMessage());
+        }
+        return 0;
     }
 
     public File reassembleFile(String fileId, String outputFileName, int totalChunks) throws IOException {

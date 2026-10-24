@@ -34,3 +34,7 @@ Thumbs.db
 # Node modules (for upcoming frontend)
 **/node_modules/
 **/dist/
+.classpath
+.project
+.settings/
+.factorypath

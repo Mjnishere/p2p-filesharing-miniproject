@@ -133,7 +133,14 @@ public class SearchManagerService {
                             replyMsg.getPayload(),
                             new TypeReference<List<SearchResult>>() {}
                     );
-                    aggregatedResults.addAll(peerResults);
+                    if (peerResults != null) {
+                        for (SearchResult sr : peerResults) {
+                            if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
+                                sr.setSourceHost(peer.getHost());
+                            }
+                        }
+                        aggregatedResults.addAll(peerResults);
+                    }
                 }
             } catch (Exception e) {
                 System.err.println("Search forward failed to peer: " + peer.getPeerId() + " (" + e.getMessage() + ")");
@@ -182,7 +189,14 @@ public class SearchManagerService {
                                 replyMsg.getPayload(),
                                 new TypeReference<List<SearchResult>>() {}
                         );
-                        results.addAll(forwardedResults);
+                        if (forwardedResults != null) {
+                            for (SearchResult sr : forwardedResults) {
+                                if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
+                                    sr.setSourceHost(peer.getHost());
+                                }
+                            }
+                            results.addAll(forwardedResults);
+                        }
                     }
                 } catch (Exception ignored) {}
             }

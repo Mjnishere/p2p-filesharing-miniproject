@@ -7,13 +7,20 @@ import modell.PeerInfo;
 import modell.SearchResult;
 import modell.SharedFile;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.FileSystemResource;
+import org.springframework.core.io.Resource;
+import org.springframework.http.ContentDisposition;
+import org.springframework.http.HttpHeaders;
 import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -85,6 +92,21 @@ public class FileSharingController {
         );
     }
 
+    // Delete shared file metadata and chunk storage
+    @DeleteMapping(value = {"/files/{fileId}", "/files/delete"})
+    public Map<String, Object> deleteFile(@PathVariable(required = false) String fileId,
+                                          @RequestParam(required = false) String fileIdParam) {
+        String targetId = (fileId != null && !fileId.isBlank()) ? fileId : fileIdParam;
+        if (targetId == null || targetId.isBlank()) {
+            throw new IllegalArgumentException("fileId must be provided");
+        }
+        boolean deleted = chunkManagerService.deleteSharedFile(targetId);
+        return Map.of(
+            "status", deleted ? "DELETED" : "NOT_FOUND",
+            "fileId", targetId
+        );
+    }
+
     @ExceptionHandler(FileNotFoundException.class)
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public Map<String, Object> handleFileNotFound(FileNotFoundException e) {
@@ -127,6 +149,52 @@ public class FileSharingController {
     @GetMapping("/download/all")
     public Collection<DownloadManagerService.DownloadJob> listAllDownloads() {
         return downloadManagerService.getAllJobs();
+    }
+
+    // Stream file directly to client browser/device as an attachment download
+    @GetMapping(value = {"/files/download", "/download/file"})
+    public ResponseEntity<Resource> downloadFileToDevice(
+            @RequestParam(required = false) String fileId,
+            @RequestParam(required = false) String fileName) throws IOException {
+
+        String jobFileName = null;
+        int jobTotalChunks = 0;
+        if (fileId != null && !fileId.isBlank()) {
+            DownloadManagerService.DownloadJob job = downloadManagerService.getJob(fileId);
+            if (job != null) {
+                jobFileName = job.getFileName();
+                jobTotalChunks = job.getTotalChunks();
+            }
+        }
+
+        File file = chunkManagerService.resolveFileForDownload(fileId, fileName, jobFileName, jobTotalChunks);
+        if (file == null || !file.exists() || !file.isFile()) {
+            throw new FileNotFoundException("Requested file was not found on node storage.");
+        }
+
+        String downloadName = (fileName != null && !fileName.isBlank())
+                ? fileName
+                : ((jobFileName != null && !jobFileName.isBlank()) ? jobFileName : file.getName());
+
+        Resource resource = new FileSystemResource(file);
+
+        ContentDisposition disposition = ContentDisposition.attachment()
+                .filename(downloadName, StandardCharsets.UTF_8)
+                .build();
+
+        String mimeType = null;
+        try {
+            mimeType = Files.probeContentType(file.toPath());
+        } catch (Exception ignored) {}
+        if (mimeType == null || mimeType.isBlank()) {
+            mimeType = MediaType.APPLICATION_OCTET_STREAM_VALUE;
+        }
+
+        return ResponseEntity.ok()
+                .header(HttpHeaders.CONTENT_DISPOSITION, disposition.toString())
+                .contentType(MediaType.parseMediaType(mimeType))
+                .contentLength(file.length())
+                .body(resource);
     }
 
     // Recover missing chunks and reassemble file with byte integrity verification

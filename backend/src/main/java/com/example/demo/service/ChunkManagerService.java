@@ -11,6 +11,7 @@ import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.*;
 import java.util.ArrayList;
+import java.util.Comparator;
 import java.util.List;
 import java.util.UUID;
 
@@ -166,6 +167,184 @@ public class ChunkManagerService {
             System.err.println("Error fetching chunk count: " + e.getMessage());
         }
         return 0;
+    }
+
+    public SharedFile getSharedFile(String fileId) {
+        String sql = "SELECT file_id, name, size_bytes, owner_peer_id, original_path FROM files WHERE file_id = ?";
+        try (Connection conn = DriverManager.getConnection(dbUrl);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, fileId);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new SharedFile(
+                            rs.getString("file_id"),
+                            rs.getString("name"),
+                            rs.getLong("size_bytes"),
+                            rs.getString("owner_peer_id"),
+                            rs.getString("original_path")
+                    );
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error fetching shared file: " + e.getMessage());
+        }
+        return null;
+    }
+
+    public SharedFile getSharedFileByName(String fileName) {
+        String sql = "SELECT file_id, name, size_bytes, owner_peer_id, original_path FROM files WHERE name = ? ORDER BY rowid DESC LIMIT 1";
+        try (Connection conn = DriverManager.getConnection(dbUrl);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, fileName);
+            try (ResultSet rs = ps.executeQuery()) {
+                if (rs.next()) {
+                    return new SharedFile(
+                            rs.getString("file_id"),
+                            rs.getString("name"),
+                            rs.getLong("size_bytes"),
+                            rs.getString("owner_peer_id"),
+                            rs.getString("original_path")
+                    );
+                }
+            }
+        } catch (SQLException e) {
+            System.err.println("Error fetching shared file by name: " + e.getMessage());
+        }
+        return null;
+    }
+
+    public boolean hasAllChunks(String fileId, int totalChunks) {
+        if (totalChunks <= 0) return false;
+        for (int i = 0; i < totalChunks; i++) {
+            if (!hasChunk(fileId, i)) {
+                return false;
+            }
+        }
+        return true;
+    }
+
+    public File resolveFileForDownload(String fileId, String fileName, String jobFileName, int jobTotalChunks) throws IOException {
+        Path reconstructedDir = Paths.get("peer-data", "reconstructed");
+        Path uploadsDir = Paths.get("peer-data", "uploads");
+
+        // 1. Try fileId lookup in database
+        if (fileId != null && !fileId.isBlank()) {
+            SharedFile shared = getSharedFile(fileId);
+            if (shared != null) {
+                if (fileName == null || fileName.isBlank()) {
+                    fileName = shared.getName();
+                }
+                // Check original path
+                if (shared.getOriginalPath() != null) {
+                    File orig = new File(shared.getOriginalPath());
+                    if (orig.exists() && orig.isFile()) {
+                        return orig;
+                    }
+                }
+                // Check reconstructed directory
+                File recon = reconstructedDir.resolve(shared.getName()).toFile();
+                if (recon.exists() && recon.isFile()) {
+                    return recon;
+                }
+                // Reassemble from chunks if available
+                int totalChunks = getTotalChunksForFile(fileId);
+                if (totalChunks > 0 && hasAllChunks(fileId, totalChunks)) {
+                    return reassembleFile(fileId, shared.getName(), totalChunks);
+                }
+            }
+
+            // Check if job fileName matches reconstructed file
+            if (jobFileName != null && !jobFileName.isBlank()) {
+                File recon = reconstructedDir.resolve(jobFileName).toFile();
+                if (recon.exists() && recon.isFile()) {
+                    return recon;
+                }
+                if (jobTotalChunks > 0 && hasAllChunks(fileId, jobTotalChunks)) {
+                    return reassembleFile(fileId, jobFileName, jobTotalChunks);
+                }
+            }
+
+            // Check chunks directory directly for fileId
+            Path chunkDir = storageRoot.resolve(fileId);
+            if (Files.isDirectory(chunkDir)) {
+                try (var stream = Files.list(chunkDir)) {
+                    long chunkCount = stream.filter(p -> p.getFileName().toString().endsWith(".chunk")).count();
+                    if (chunkCount > 0) {
+                        String targetName = (fileName != null && !fileName.isBlank())
+                                ? fileName
+                                : ((jobFileName != null && !jobFileName.isBlank()) ? jobFileName : fileId + ".bin");
+                        return reassembleFile(fileId, targetName, (int) chunkCount);
+                    }
+                }
+            }
+        }
+
+        // 2. Try fileName lookup
+        if (fileName != null && !fileName.isBlank()) {
+            // Check reconstructed directory
+            File recon = reconstructedDir.resolve(fileName).toFile();
+            if (recon.exists() && recon.isFile()) {
+                return recon;
+            }
+            // Check uploads directory
+            File uploaded = uploadsDir.resolve(fileName).toFile();
+            if (uploaded.exists() && uploaded.isFile()) {
+                return uploaded;
+            }
+            // Check database by fileName
+            SharedFile shared = getSharedFileByName(fileName);
+            if (shared != null) {
+                if (shared.getOriginalPath() != null) {
+                    File orig = new File(shared.getOriginalPath());
+                    if (orig.exists() && orig.isFile()) {
+                        return orig;
+                    }
+                }
+                int totalChunks = getTotalChunksForFile(shared.getFileId());
+                if (totalChunks > 0 && hasAllChunks(shared.getFileId(), totalChunks)) {
+                    return reassembleFile(shared.getFileId(), shared.getName(), totalChunks);
+                }
+            }
+            // Check project directory directly
+            File localFile = new File(fileName);
+            if (localFile.exists() && localFile.isFile()) {
+                return localFile;
+            }
+        }
+
+        return null;
+    }
+
+    public boolean deleteSharedFile(String fileId) {
+        try (Connection conn = DriverManager.getConnection(dbUrl)) {
+            conn.setAutoCommit(false);
+            try (PreparedStatement ps1 = conn.prepareStatement("DELETE FROM chunks WHERE file_id = ?");
+                 PreparedStatement ps2 = conn.prepareStatement("DELETE FROM file_peers WHERE file_id = ?");
+                 PreparedStatement ps3 = conn.prepareStatement("DELETE FROM files WHERE file_id = ?")) {
+                ps1.setString(1, fileId);
+                ps1.executeUpdate();
+                ps2.setString(1, fileId);
+                ps2.executeUpdate();
+                ps3.setString(1, fileId);
+                int rows = ps3.executeUpdate();
+                conn.commit();
+
+                // Delete chunks on disk
+                Path chunkDir = storageRoot.resolve(fileId);
+                if (Files.exists(chunkDir)) {
+                    try (var stream = Files.walk(chunkDir)) {
+                        stream.sorted(Comparator.reverseOrder())
+                              .forEach(p -> {
+                                  try { Files.deleteIfExists(p); } catch (Exception ignored) {}
+                              });
+                    }
+                }
+                return rows > 0;
+            }
+        } catch (Exception e) {
+            System.err.println("Error deleting file " + fileId + ": " + e.getMessage());
+            return false;
+        }
     }
 
     public File reassembleFile(String fileId, String outputFileName, int totalChunks) throws IOException {

@@ -17,10 +17,18 @@ import java.nio.file.Paths;
 import java.util.Arrays;
 import java.util.Map;
 
+import com.example.demo.controller.FileSharingController;
+import org.springframework.core.io.Resource;
+import org.springframework.http.HttpHeaders;
+import org.springframework.http.ResponseEntity;
+
 import static org.junit.jupiter.api.Assertions.*;
 
 @SpringBootTest
 public class ChunkDownloadRecoveryTest {
+
+    @Autowired
+    private FileSharingController fileSharingController;
 
     @Autowired
     private ChunkManagerService chunkManagerService;
@@ -123,5 +131,32 @@ public class ChunkDownloadRecoveryTest {
         // Clean up test files
         sourceFile.delete();
         reassembledFile.delete();
+    }
+
+    @Test
+    public void testDownloadFileToDeviceEndpoint() throws Exception {
+        // Create sample file and share it
+        File testDeviceFile = new File("test-device-download.txt");
+        byte[] content = "Hello P2P Node Device Download!".getBytes();
+        try (FileOutputStream fos = new FileOutputStream(testDeviceFile)) {
+            fos.write(content);
+        }
+
+        SharedFile shared = chunkManagerService.splitAndRegisterFile(testDeviceFile, "peer-1");
+        assertNotNull(shared);
+
+        // Call the download controller endpoint
+        ResponseEntity<Resource> response = fileSharingController.downloadFileToDevice(shared.getFileId(), shared.getName());
+        assertNotNull(response);
+        assertEquals(200, response.getStatusCode().value());
+        assertTrue(response.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION).contains("attachment"));
+        assertTrue(response.getHeaders().getFirst(HttpHeaders.CONTENT_DISPOSITION).contains("test-device-download.txt"));
+        assertEquals(content.length, response.getHeaders().getContentLength());
+
+        Resource body = response.getBody();
+        assertNotNull(body);
+        assertArrayEquals(content, body.getInputStream().readAllBytes());
+
+        testDeviceFile.delete();
     }
 }

@@ -30,6 +30,7 @@
     activeJobPolling: false,
     lastSearchQuery: '',
     selectedUploadFile: null,
+    pendingDeviceDownloads: new Set(),
   };
 
   // ---------------------------------------------------------------------------
@@ -378,6 +379,13 @@
         if (job.status === 'DOWNLOADING' || job.status === 'PENDING') {
           hasActiveDownloads = true;
         }
+
+        // Auto-download to device once a queued transfer completes
+        if (job.status === 'COMPLETED' && STATE.pendingDeviceDownloads.has(job.fileId)) {
+          STATE.pendingDeviceDownloads.delete(job.fileId);
+          showToast('success', 'Transfer Complete!', `"${job.fileName}" has been reassembled and is downloading to your device.`);
+          triggerBrowserDownload(job.fileId, job.fileName);
+        }
       });
 
       STATE.downloadJobs = updatedMap;
@@ -494,6 +502,16 @@
                 <circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/>
               </svg>
               <span>Corrupt &amp; Test</span>
+            </button>
+            <button class="btn btn-xs btn-outline delete-shared-btn"
+                    data-fileid="${sanitizeHtml(file.fileId)}"
+                    data-filename="${sanitizeHtml(file.name)}"
+                    type="button"
+                    title="Remove this file from node storage">
+              <svg class="icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+              </svg>
+              <span>Delete</span>
             </button>
           </div>
         </td>
@@ -615,6 +633,18 @@
       } else if (job.status === 'COMPLETED') {
         actionsToolbarHtml = `
           <div class="job-actions-toolbar" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap;">
+            <button class="btn btn-sm btn-primary save-to-device-btn" 
+                    data-fileid="${sanitizeHtml(job.fileId)}"
+                    data-filename="${sanitizeHtml(job.fileName)}"
+                    type="button"
+                    title="Download this reassembled file directly to your computer">
+              <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                <polyline points="7 10 12 15 17 10"/>
+                <line x1="12" x2="12" y1="15" y2="3"/>
+              </svg>
+              <span>Save to Device</span>
+            </button>
             <button class="btn btn-sm btn-outline recorrupt-transfer-btn" 
                     data-fileid="${sanitizeHtml(job.fileId)}"
                     data-filename="${sanitizeHtml(job.fileName)}"
@@ -626,7 +656,7 @@
               <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
                 <circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/>
               </svg>
-              <span>Re-Corrupt File (Simulate Missing Chunks)</span>
+              <span>Re-Corrupt File</span>
             </button>
           </div>
         `;
@@ -898,11 +928,55 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Action: Trigger Native Browser Download directly to device
+  // ---------------------------------------------------------------------------
+  function triggerBrowserDownload(fileId, fileName) {
+    const params = new URLSearchParams();
+    if (fileId) params.set('fileId', fileId);
+    if (fileName) params.set('fileName', fileName);
+
+    const downloadUrl = `${CONFIG.apiBase}/api/files/download?${params.toString()}`;
+    const anchor = document.createElement('a');
+    anchor.href = downloadUrl;
+    if (fileName) {
+      anchor.setAttribute('download', fileName);
+    }
+    anchor.style.display = 'none';
+    document.body.appendChild(anchor);
+    anchor.click();
+    setTimeout(() => {
+      if (anchor.parentNode) {
+        anchor.parentNode.removeChild(anchor);
+      }
+    }, 200);
+
+    appendTerminalLog('DEVICE DOWNLOAD INITIATED', { fileId, fileName, url: downloadUrl });
+  }
+
+  // ---------------------------------------------------------------------------
   // Action: Trigger Download Job
   // ---------------------------------------------------------------------------
   async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort) {
     try {
-      showToast('info', 'Starting Transfer', `Initiating chunk stream for "${fileName}" from ${sourceHost}:${sourcePort}...`);
+      // 1. If job is already completed on this node, immediately download to device!
+      const existingJob = STATE.downloadJobs.get(fileId);
+      if (existingJob && existingJob.status === 'COMPLETED') {
+        showToast('success', 'File Ready on Node', `"${fileName}" is already assembled. Saving to your device now...`);
+        triggerBrowserDownload(fileId, fileName);
+        return;
+      }
+
+      // 2. If file is locally shared on this node, immediately download to device!
+      const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
+      if (existingShared) {
+        showToast('success', 'Local File Available', `Saving "${fileName}" directly to your device...`);
+        triggerBrowserDownload(fileId, fileName);
+        return;
+      }
+
+      // 3. Mark for auto-download to device once transfer completes
+      STATE.pendingDeviceDownloads.add(fileId);
+      showToast('info', 'Transfer Initiated', `Streaming "${fileName}" from ${sourceHost}:${sourcePort}... It will be saved to your device when complete.`);
 
       const url = `${CONFIG.apiBase}/api/download/start?fileId=${encodeURIComponent(fileId)}&fileName=${encodeURIComponent(fileName)}&totalChunks=${totalChunks}&sourceHost=${encodeURIComponent(sourceHost)}&sourcePort=${sourcePort}`;
       const resp = await fetch(url, { method: 'POST' });
@@ -920,9 +994,11 @@
           transfersPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
         }
       } else {
+        STATE.pendingDeviceDownloads.delete(fileId);
         showToast('error', 'Download Request Failed', job.message || 'Could not queue download.');
       }
     } catch (err) {
+      STATE.pendingDeviceDownloads.delete(fileId);
       showToast('error', 'Download Exception', err.message || 'Error connecting to node.');
     }
   }
@@ -1194,8 +1270,31 @@
       }
     });
 
-    // Delegate "Auto-Recover Missing Chunks" button on Transfers Card
+    // Delegate Transfers Card actions ("Save to Device", "Auto-Recover", "Re-Corrupt")
     DOM.transfersCardList.addEventListener('click', async (e) => {
+      // 1. Direct Save to Device button on completed transfer
+      const saveBtn = e.target.closest('.save-to-device-btn');
+      if (saveBtn) {
+        const fileId = saveBtn.getAttribute('data-fileid');
+        const fileName = saveBtn.getAttribute('data-filename');
+        showToast('info', 'Saving to Device', `Downloading "${fileName}" to your computer...`);
+        triggerBrowserDownload(fileId, fileName);
+        return;
+      }
+
+      // 2. Re-Corrupt File button
+      const recorruptBtn = e.target.closest('.recorrupt-transfer-btn');
+      if (recorruptBtn) {
+        const fileId = recorruptBtn.getAttribute('data-fileid');
+        const fileName = recorruptBtn.getAttribute('data-filename');
+        const totalChunks = parseInt(recorruptBtn.getAttribute('data-totalchunks'), 10) || 1;
+        const host = recorruptBtn.getAttribute('data-host') || '127.0.0.1';
+        const port = parseInt(recorruptBtn.getAttribute('data-port'), 10) || 9001;
+        await recorruptAndDownloadFile(fileId, fileName, totalChunks, host, port);
+        return;
+      }
+
+      // 3. Auto-Recover Missing Chunks button
       const btn = e.target.closest('.recover-transfer-btn');
       if (btn) {
         const fileId = btn.getAttribute('data-fileid');
@@ -1220,10 +1319,11 @@
           const data = await resp.json();
 
           if (resp.ok && data.status === 'RECOVERY_AND_REASSEMBLY_SUCCESSFUL') {
-            showToast('success', 'Recovery Successful', `All missing chunks recovered over TCP. "${fileName}" reassembled with 100% byte integrity!`);
+            showToast('success', 'Recovery Successful', `All missing chunks recovered over TCP. "${fileName}" reassembled and saving to your device!`);
             appendTerminalLog(`RECOVERY SUCCESS: ${fileName}`, data);
             await fetchDownloadJobs();
             await fetchSharedFiles();
+            triggerBrowserDownload(fileId, fileName);
           } else {
             showToast('error', 'Recovery Incomplete', data.message || 'Could not recover all missing chunks.');
             appendTerminalLog('RECOVERY INCOMPLETE', data, true);
@@ -1232,6 +1332,47 @@
           showToast('error', 'Recovery Exception', err.message || 'Error executing recovery.');
         } finally {
           btn.disabled = false;
+        }
+      }
+    });
+
+    // Delegate actions in Local Shared Files table ("Download", "Corrupt & Test")
+    DOM.sharedFilesTableBody.addEventListener('click', async (e) => {
+      const downloadBtn = e.target.closest('.download-shared-btn');
+      if (downloadBtn) {
+        const fileId = downloadBtn.getAttribute('data-fileid');
+        const fileName = downloadBtn.getAttribute('data-filename');
+        showToast('info', 'Saving to Device', `Downloading "${fileName}" to your computer...`);
+        triggerBrowserDownload(fileId, fileName);
+        return;
+      }
+
+      const recorruptBtn = e.target.closest('.recorrupt-shared-btn');
+      if (recorruptBtn) {
+        const fileId = recorruptBtn.getAttribute('data-fileid');
+        const fileName = recorruptBtn.getAttribute('data-filename');
+        const totalChunks = parseInt(recorruptBtn.getAttribute('data-totalchunks'), 10) || 1;
+        await recorruptAndDownloadFile(fileId, fileName, totalChunks);
+        return;
+      }
+
+      const deleteBtn = e.target.closest('.delete-shared-btn');
+      if (deleteBtn) {
+        const fileId = deleteBtn.getAttribute('data-fileid');
+        const fileName = deleteBtn.getAttribute('data-filename');
+        if (confirm(`Remove "${fileName}" from node storage?`)) {
+          try {
+            const resp = await fetch(`${CONFIG.apiBase}/api/files/${encodeURIComponent(fileId)}`, { method: 'DELETE' });
+            if (resp.ok) {
+              showToast('success', 'File Removed', `"${fileName}" deleted from node storage.`);
+              await fetchSharedFiles();
+              await fetchDownloadJobs();
+            } else {
+              showToast('error', 'Delete Failed', 'Could not remove file.');
+            }
+          } catch (err) {
+            showToast('error', 'Delete Error', err.message);
+          }
         }
       }
     });

@@ -1297,6 +1297,9 @@ body {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(56px, 1fr));
   gap: 6px;
+  max-height: 280px;
+  overflow-y: auto;
+  padding: 4px;
 }
 
 .chunk-cell {
@@ -1624,6 +1627,11 @@ body {
 /* --------------------------------------------------------------------------
    Empty States
    -------------------------------------------------------------------------- */
+[hidden],
+.empty-state[hidden] {
+  display: none !important;
+}
+
 .empty-state {
   display: flex;
   flex-direction: column;

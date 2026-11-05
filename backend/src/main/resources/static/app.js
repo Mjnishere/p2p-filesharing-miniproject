@@ -13,7 +13,7 @@
   const CONFIG = {
     apiBase: '', // Same origin (relative paths)
     pollIntervalNormal: 3000, // 3 seconds normal polling
-    pollIntervalFast: 1000,   // 1 second when active transfers exist
+    pollIntervalFast: 200,    // 200ms fast polling when active transfers exist
     toastDuration: 4200,      // Toast auto-dismiss timeout
     defaultOwnerId: 'peer-1',
   };
@@ -529,11 +529,13 @@
 
     if (jobs.length === 0) {
       DOM.transfersEmptyState.hidden = false;
+      DOM.transfersEmptyState.style.display = 'flex';
       DOM.transfersCardList.innerHTML = '';
       return;
     }
 
     DOM.transfersEmptyState.hidden = true;
+    DOM.transfersEmptyState.style.display = 'none';
     DOM.transfersCardList.innerHTML = '';
 
     // Sort jobs: DOWNLOADING/PENDING first, then COMPLETED/FAILED
@@ -563,24 +565,34 @@
 
       // Render Visual Chunk Ribbon / Grid
       let chunkGridHtml = '';
-      const totalChunks = job.totalChunks || 1;
+      const totalChunks = parseInt(job.totalChunks, 10) || 1;
       const chunkStates = job.chunkStates || {};
       const chunkRetries = job.chunkRetries || {};
 
       for (let i = 0; i < totalChunks; i++) {
-        const state = (chunkStates[i] || 'PENDING').toUpperCase();
-        const retries = chunkRetries[i] || 0;
+        const state = (chunkStates[i] || chunkStates[String(i)] || 'PENDING').toUpperCase();
+        const retries = chunkRetries[i] || chunkRetries[String(i)] || 0;
 
         let cellClass = 'chunk-pending';
-        if (state === 'COMPLETED') cellClass = 'chunk-completed';
-        else if (state === 'DOWNLOADING' || state === 'REQUESTED') cellClass = 'chunk-downloading';
-        else if (state === 'RETRYING') cellClass = 'chunk-retrying';
-        else if (state === 'FAILED') cellClass = 'chunk-failed';
+        let stateLabel = 'Pending';
+        if (state === 'COMPLETED') {
+          cellClass = 'chunk-completed';
+          stateLabel = 'Assembled';
+        } else if (state === 'DOWNLOADING' || state === 'REQUESTED') {
+          cellClass = 'chunk-downloading';
+          stateLabel = 'Fetching';
+        } else if (state === 'RETRYING') {
+          cellClass = 'chunk-retrying';
+          stateLabel = 'Retrying';
+        } else if (state === 'FAILED') {
+          cellClass = 'chunk-failed';
+          stateLabel = 'Failed';
+        }
 
         const retryBadgeHtml = retries > 0 ? `<span class="chunk-retry-badge" title="${retries} Retries">x${retries}</span>` : '';
 
         chunkGridHtml += `
-          <div class="chunk-cell ${cellClass}" title="Chunk #${i}: ${state} (Retries: ${retries})">
+          <div class="chunk-cell ${cellClass}" title="Chunk #${i}: ${stateLabel} (Retries: ${retries})">
             <span>#${i}</span>
             ${retryBadgeHtml}
           </div>
@@ -964,25 +976,71 @@
   // ---------------------------------------------------------------------------
   async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort) {
     try {
-      // 1. If job is already completed on this node, immediately download to device!
+      totalChunks = parseInt(totalChunks, 10) || 1;
+
+      // Smooth scroll to transfers section
+      const transfersPanel = document.getElementById('panelTransfers');
+      if (transfersPanel) {
+        transfersPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      }
+
+      // 1. If job is already completed on this node, or file is locally shared:
       const existingJob = STATE.downloadJobs.get(fileId);
-      if (existingJob && existingJob.status === 'COMPLETED') {
-        showToast('success', 'File Ready on Node', `"${fileName}" is already assembled. Saving to your device now...`);
+      const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
+
+      if ((existingJob && existingJob.status === 'COMPLETED') || existingShared) {
+        // Ensure this job exists in STATE.downloadJobs with COMPLETED chunk matrix so it renders
+        if (!existingJob || existingJob.status !== 'COMPLETED') {
+          const compChunks = {};
+          for (let i = 0; i < totalChunks; i++) compChunks[i] = 'COMPLETED';
+          STATE.downloadJobs.set(fileId, {
+            fileId,
+            fileName: fileName || (existingShared ? existingShared.name : 'file.bin'),
+            totalChunks,
+            sourceHost: sourceHost || '127.0.0.1',
+            sourcePort: sourcePort || 9001,
+            status: 'COMPLETED',
+            completedChunks: totalChunks,
+            progressPercentage: 100,
+            startTime: Date.now() - 1000,
+            endTime: Date.now(),
+            chunkStates: compChunks,
+            chunkRetries: {}
+          });
+        }
+        renderTransfersList();
+        showToast('success', 'File Ready on Node', `"${fileName}" is reassembled. Saving to your device now...`);
         triggerBrowserDownload(fileId, fileName);
         return;
       }
 
-      // 2. If file is locally shared on this node, immediately download to device!
-      const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
-      if (existingShared) {
-        showToast('success', 'Local File Available', `Saving "${fileName}" directly to your device...`);
-        triggerBrowserDownload(fileId, fileName);
-        return;
+      // 2. Optimistic initial render: Immediately show active transfer in Chunk Assembly Matrix
+      const initialChunkStates = {};
+      for (let i = 0; i < totalChunks; i++) {
+        initialChunkStates[i] = (i === 0 ? 'DOWNLOADING' : 'PENDING');
       }
+      const initialJob = {
+        fileId,
+        fileName,
+        totalChunks,
+        sourceHost: sourceHost || '127.0.0.1',
+        sourcePort: sourcePort || 9001,
+        status: 'DOWNLOADING',
+        completedChunks: 0,
+        progressPercentage: 0,
+        startTime: Date.now(),
+        chunkStates: initialChunkStates,
+        chunkRetries: {}
+      };
+      STATE.downloadJobs.set(fileId, initialJob);
+      renderTransfersList();
 
       // 3. Mark for auto-download to device once transfer completes
       STATE.pendingDeviceDownloads.add(fileId);
-      showToast('info', 'Transfer Initiated', `Streaming "${fileName}" from ${sourceHost}:${sourcePort}... It will be saved to your device when complete.`);
+      showToast('info', 'Transfer Initiated', `Streaming "${fileName}" from ${sourceHost}:${sourcePort}... Chunks will assemble in real-time.`);
+
+      // Start fast polling immediately to animate chunks
+      startFastPolling();
 
       const url = `${CONFIG.apiBase}/api/download/start?fileId=${encodeURIComponent(fileId)}&fileName=${encodeURIComponent(fileName)}&totalChunks=${totalChunks}&sourceHost=${encodeURIComponent(sourceHost)}&sourcePort=${sourcePort}`;
       const resp = await fetch(url, { method: 'POST' });
@@ -992,13 +1050,6 @@
         appendTerminalLog(`DOWNLOAD STARTED: ${fileName}`, job);
         STATE.downloadJobs.set(job.fileId, job);
         renderTransfersList();
-        startFastPolling();
-
-        // Smooth scroll to transfers section
-        const transfersPanel = document.getElementById('panelTransfers');
-        if (transfersPanel) {
-          transfersPanel.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-        }
       } else {
         STATE.pendingDeviceDownloads.delete(fileId);
         showToast('error', 'Download Request Failed', job.message || 'Could not queue download.');
@@ -1045,6 +1096,9 @@
     if (STATE.activeJobPolling) return;
     STATE.activeJobPolling = true;
     if (DOM.pollIndicator) DOM.pollIndicator.classList.add('pulse-fast');
+
+    // Trigger immediate fetch so we don't wait for the first interval tick
+    fetchDownloadJobs();
 
     if (STATE.pollFastTimer) clearInterval(STATE.pollFastTimer);
     STATE.pollFastTimer = setInterval(async () => {
@@ -1348,8 +1402,8 @@
       if (downloadBtn) {
         const fileId = downloadBtn.getAttribute('data-fileid');
         const fileName = downloadBtn.getAttribute('data-filename');
-        showToast('info', 'Saving to Device', `Downloading "${fileName}" to your computer...`);
-        triggerBrowserDownload(fileId, fileName);
+        const totalChunks = parseInt(downloadBtn.getAttribute('data-totalchunks'), 10) || 1;
+        startDownloadJob(fileId, fileName, totalChunks, '127.0.0.1', 9001);
         return;
       }
 

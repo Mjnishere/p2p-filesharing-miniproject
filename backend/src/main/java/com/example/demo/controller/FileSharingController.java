@@ -101,6 +101,9 @@ public class FileSharingController {
             throw new IllegalArgumentException("fileId must be provided");
         }
         boolean deleted = chunkManagerService.deleteSharedFile(targetId);
+        if (deleted) {
+            downloadManagerService.resetJob(targetId);
+        }
         return Map.of(
             "status", deleted ? "DELETED" : "NOT_FOUND",
             "fileId", targetId

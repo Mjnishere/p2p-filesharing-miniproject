@@ -2,6 +2,7 @@ package com.example.demo.service;
 
 import com.example.demo.NetworkService;
 import modell.ChunkData;
+import modell.SharedFile;
 import org.springframework.stereotype.Service;
 
 import java.io.File;
@@ -97,6 +98,9 @@ public class DownloadManagerService {
             if (!success) {
                 failedChunkIndices.add(chunkNo);
             }
+            try {
+                Thread.sleep(100); // Visual pacing so chunk assembly matrix is visible in real time
+            } catch (InterruptedException ignored) {}
         }
 
         if (failedChunkIndices.isEmpty()) {
@@ -260,6 +264,23 @@ public class DownloadManagerService {
     }
 
     public Collection<DownloadJob> getAllJobs() {
+        for (SharedFile file : chunkManagerService.getAllSharedFiles()) {
+            if (!activeJobs.containsKey(file.getFileId())) {
+                int totalChunks = chunkManagerService.getTotalChunksForFile(file.getFileId());
+                if (totalChunks <= 0) {
+                    totalChunks = (int) Math.ceil((double) file.getSizeBytes() / (1024 * 1024));
+                    if (totalChunks <= 0) totalChunks = 1;
+                }
+                DownloadJob compJob = new DownloadJob(file.getFileId(), file.getName(), totalChunks, "127.0.0.1", 9001);
+                compJob.setStatus("COMPLETED");
+                compJob.setEndTime(System.currentTimeMillis());
+                for (int i = 0; i < totalChunks; i++) {
+                    compJob.getChunkStates().put(i, "COMPLETED");
+                    compJob.incrementCompleted();
+                }
+                activeJobs.put(file.getFileId(), compJob);
+            }
+        }
         return activeJobs.values();
     }
 }

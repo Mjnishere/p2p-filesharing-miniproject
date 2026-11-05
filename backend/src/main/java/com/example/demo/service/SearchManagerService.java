@@ -14,6 +14,7 @@ import java.io.DataInputStream;
 import java.io.DataOutputStream;
 import java.net.Inet4Address;
 import java.net.InetAddress;
+import java.net.InetSocketAddress;
 import java.net.NetworkInterface;
 import java.net.Socket;
 import java.sql.*;
@@ -94,6 +95,18 @@ public class SearchManagerService {
         return results;
     }
 
+    public boolean isSelf(PeerInfo peer) {
+        if (peer == null) return true;
+        if (myPeerId != null && myPeerId.equals(peer.getPeerId())) return true;
+        String host = peer.getHost();
+        if (host == null) return true;
+        boolean isLocalHost = "127.0.0.1".equals(host)
+                || "localhost".equalsIgnoreCase(host)
+                || "0.0.0.0".equals(host)
+                || getAdvertisedHost().equalsIgnoreCase(host);
+        return isLocalHost && (peer.getPort() == myTcpPort);
+    }
+
     // Retrieve active neighbor peers registered in SQLite
     public List<PeerInfo> getKnownPeers() {
         List<PeerInfo> peers = new ArrayList<>();
@@ -104,11 +117,14 @@ public class SearchManagerService {
             ps.setString(1, myPeerId);
             try (ResultSet rs = ps.executeQuery()) {
                 while (rs.next()) {
-                    peers.add(new PeerInfo(
+                    PeerInfo p = new PeerInfo(
                             rs.getString("peer_id"),
                             rs.getString("host"),
                             rs.getInt("port")
-                    ));
+                    );
+                    if (!isSelf(p)) {
+                        peers.add(p);
+                    }
                 }
             }
         } catch (SQLException e) {
@@ -164,26 +180,30 @@ public class SearchManagerService {
         );
 
         for (PeerInfo peer : getKnownPeers()) {
-            try (Socket socket = new Socket(peer.getHost(), peer.getPort());
-                 DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-                 DataInputStream dis = new DataInputStream(socket.getInputStream())) {
+            if (isSelf(peer)) continue;
+            try (Socket socket = new Socket()) {
+                socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()), 2000);
+                socket.setSoTimeout(2500);
+                try (DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+                     DataInputStream dis = new DataInputStream(socket.getInputStream())) {
 
-                FramingUtil.writeFrame(dos, objectMapper.writeValueAsString(searchMsg));
-                String rawReply = FramingUtil.readFrame(dis);
-                NetworkMessage replyMsg = objectMapper.readValue(rawReply, NetworkMessage.class);
+                    FramingUtil.writeFrame(dos, objectMapper.writeValueAsString(searchMsg));
+                    String rawReply = FramingUtil.readFrame(dis);
+                    NetworkMessage replyMsg = objectMapper.readValue(rawReply, NetworkMessage.class);
 
-                if ("SEARCH_RESULT".equals(replyMsg.getType()) && replyMsg.getPayload() != null) {
-                    List<SearchResult> peerResults = objectMapper.readValue(
-                            replyMsg.getPayload(),
-                            new TypeReference<List<SearchResult>>() {}
-                    );
-                    if (peerResults != null) {
-                        for (SearchResult sr : peerResults) {
-                            if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
-                                sr.setSourceHost(peer.getHost());
+                    if ("SEARCH_RESULT".equals(replyMsg.getType()) && replyMsg.getPayload() != null) {
+                        List<SearchResult> peerResults = objectMapper.readValue(
+                                replyMsg.getPayload(),
+                                new TypeReference<List<SearchResult>>() {}
+                        );
+                        if (peerResults != null) {
+                            for (SearchResult sr : peerResults) {
+                                if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
+                                    sr.setSourceHost(peer.getHost());
+                                }
                             }
+                            aggregatedResults.addAll(peerResults);
                         }
-                        aggregatedResults.addAll(peerResults);
                     }
                 }
             } catch (Exception e) {
@@ -215,31 +235,35 @@ public class SearchManagerService {
             );
 
             for (PeerInfo peer : getKnownPeers()) {
+                if (isSelf(peer)) continue;
                 // Do not send back to direct sender or original initiator
                 if (peer.getPeerId().equals(msg.getSenderPeerId()) || peer.getPeerId().equals(msg.getOriginPeerId())) {
                     continue;
                 }
 
-                try (Socket socket = new Socket(peer.getHost(), peer.getPort());
-                     DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-                     DataInputStream dis = new DataInputStream(socket.getInputStream())) {
+                try (Socket socket = new Socket()) {
+                    socket.connect(new InetSocketAddress(peer.getHost(), peer.getPort()), 2000);
+                    socket.setSoTimeout(2500);
+                    try (DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+                         DataInputStream dis = new DataInputStream(socket.getInputStream())) {
 
-                    FramingUtil.writeFrame(dos, objectMapper.writeValueAsString(forwardMsg));
-                    String rawReply = FramingUtil.readFrame(dis);
-                    NetworkMessage replyMsg = objectMapper.readValue(rawReply, NetworkMessage.class);
+                        FramingUtil.writeFrame(dos, objectMapper.writeValueAsString(forwardMsg));
+                        String rawReply = FramingUtil.readFrame(dis);
+                        NetworkMessage replyMsg = objectMapper.readValue(rawReply, NetworkMessage.class);
 
-                    if ("SEARCH_RESULT".equals(replyMsg.getType()) && replyMsg.getPayload() != null) {
-                        List<SearchResult> forwardedResults = objectMapper.readValue(
-                                replyMsg.getPayload(),
-                                new TypeReference<List<SearchResult>>() {}
-                        );
-                        if (forwardedResults != null) {
-                            for (SearchResult sr : forwardedResults) {
-                                if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
-                                    sr.setSourceHost(peer.getHost());
+                        if ("SEARCH_RESULT".equals(replyMsg.getType()) && replyMsg.getPayload() != null) {
+                            List<SearchResult> forwardedResults = objectMapper.readValue(
+                                    replyMsg.getPayload(),
+                                    new TypeReference<List<SearchResult>>() {}
+                            );
+                            if (forwardedResults != null) {
+                                for (SearchResult sr : forwardedResults) {
+                                    if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
+                                        sr.setSourceHost(peer.getHost());
+                                    }
                                 }
+                                results.addAll(forwardedResults);
                             }
-                            results.addAll(forwardedResults);
                         }
                     }
                 } catch (Exception ignored) {}

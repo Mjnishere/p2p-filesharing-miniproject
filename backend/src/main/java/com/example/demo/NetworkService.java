@@ -85,6 +85,17 @@ public class NetworkService {
                 if (msg.getRequestId() != null) {
                     if (processedRequestIds.contains(msg.getRequestId())) {
                         System.out.println(">>> Suppressed duplicate request: " + msg.getRequestId());
+                        if ("SEARCH".equals(msg.getType())) {
+                            NetworkMessage reply = new NetworkMessage(
+                                    "SEARCH_RESULT",
+                                    msg.getRequestId(),
+                                    myPeerId,
+                                    myPeerId,
+                                    0,
+                                    "[]"
+                            );
+                            FramingUtil.writeFrame(dos, objectMapper.writeValueAsString(reply));
+                        }
                         continue;
                     }
                     processedRequestIds.add(msg.getRequestId());

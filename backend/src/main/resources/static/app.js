@@ -736,6 +736,12 @@
           <button class="btn btn-xs btn-secondary ping-peer-btn" data-host="${sanitizeHtml(peer.host)}" data-port="${peer.port}" data-peerid="${sanitizeHtml(peer.peerId)}" type="button">
             <span>Ping</span>
           </button>
+          <button class="btn btn-xs btn-outline remove-peer-btn" data-peerid="${sanitizeHtml(peer.peerId)}" title="Remove this peer from mesh" type="button">
+            <svg class="icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/>
+            </svg>
+            <span>Remove</span>
+          </button>
         </div>
       `;
 
@@ -1397,8 +1403,33 @@
 
     DOM.registerPeerForm.addEventListener('submit', handleRegisterPeer);
 
-    // Delegate "Ping" button on peers
+    // Delegate "Ping" and "Remove" buttons on peers
     DOM.peersDynamicList.addEventListener('click', async (e) => {
+      // 1. Remove Peer button
+      const removeBtn = e.target.closest('.remove-peer-btn');
+      if (removeBtn) {
+        const peerId = removeBtn.getAttribute('data-peerid');
+        if (confirm(`Remove peer "${peerId}" from peer mesh?`)) {
+          removeBtn.disabled = true;
+          try {
+            const resp = await fetch(`${CONFIG.apiBase}/api/peers/${encodeURIComponent(peerId)}`, { method: 'DELETE' });
+            if (resp.ok) {
+              showToast('success', 'Peer Removed', `Peer "${peerId}" removed from network mesh.`);
+              appendTerminalLog(`PEER REMOVED: ${peerId}`, { peerId });
+              await fetchKnownPeers();
+            } else {
+              showToast('error', 'Remove Peer Failed', 'Could not remove peer from registry.');
+            }
+          } catch (err) {
+            showToast('error', 'Remove Peer Error', err.message);
+          } finally {
+            removeBtn.disabled = false;
+          }
+        }
+        return;
+      }
+
+      // 2. Ping Peer button
       const btn = e.target.closest('.ping-peer-btn');
       if (btn) {
         const peerId = btn.getAttribute('data-peerid');

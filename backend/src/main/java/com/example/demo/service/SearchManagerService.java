@@ -98,6 +98,18 @@ public class SearchManagerService {
         }
     }
 
+    public boolean removePeer(String peerId) {
+        String sql = "DELETE FROM peers WHERE peer_id = ?";
+        try (Connection conn = DriverManager.getConnection(dbUrl);
+             PreparedStatement ps = conn.prepareStatement(sql)) {
+            ps.setString(1, peerId);
+            return ps.executeUpdate() > 0;
+        } catch (SQLException e) {
+            System.err.println("Error removing peer: " + e.getMessage());
+            return false;
+        }
+    }
+
     // Initiates distributed search: searches locally, then forwards to known peers if TTL > 0
     public List<SearchResult> executeDistributedSearch(String keyword, int initialTtl) {
         String requestId = UUID.randomUUID().toString();

@@ -1477,6 +1477,11 @@ body {
   gap: 6px;
 }
 
+.remove-peer-btn:hover:not(:disabled) {
+  border-color: var(--status-error);
+  color: var(--status-error);
+}
+
 /* --------------------------------------------------------------------------
    Diagnostics & Protocol Testing
    -------------------------------------------------------------------------- */

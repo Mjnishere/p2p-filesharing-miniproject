@@ -309,4 +309,19 @@ public class FileSharingController {
                 "peer", peer
         );
     }
+
+    // Remove / unregister a peer endpoint
+    @DeleteMapping(value = {"/peers/{peerId}", "/peers/remove", "/peers"})
+    public Map<String, Object> removePeer(@PathVariable(required = false) String peerId,
+                                          @RequestParam(required = false) String peerIdParam) {
+        String targetPeerId = (peerId != null && !peerId.isBlank()) ? peerId : peerIdParam;
+        if (targetPeerId == null || targetPeerId.isBlank()) {
+            throw new IllegalArgumentException("peerId must be provided");
+        }
+        boolean removed = searchManagerService.removePeer(targetPeerId);
+        return Map.of(
+                "status", removed ? "REMOVED" : "NOT_FOUND",
+                "peerId", targetPeerId
+        );
+    }
 }

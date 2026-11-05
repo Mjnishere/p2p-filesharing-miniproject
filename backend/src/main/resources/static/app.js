@@ -522,7 +522,78 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Rendering: Active Transfers & Chunk Matrix Monitor
+  // Action Toolbar Builder
+  // ---------------------------------------------------------------------------
+  function buildActionsToolbarHtml(job) {
+    if (job.status === 'FAILED') {
+      return `
+        <div class="job-actions-toolbar" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap;">
+          <button class="btn btn-sm btn-outline recorrupt-transfer-btn" 
+                  data-fileid="${sanitizeHtml(job.fileId)}"
+                  data-filename="${sanitizeHtml(job.fileName)}"
+                  data-totalchunks="${job.totalChunks}"
+                  data-host="${sanitizeHtml(job.sourceHost)}"
+                  data-port="${job.sourcePort}"
+                  type="button"
+                  title="Re-corrupt chunks #5 and #15 and restart transfer">
+            <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/>
+            </svg>
+            <span>Re-Corrupt File</span>
+          </button>
+          <button class="btn btn-sm btn-primary recover-transfer-btn" 
+                  data-fileid="${sanitizeHtml(job.fileId)}"
+                  data-filename="${sanitizeHtml(job.fileName)}"
+                  data-totalchunks="${job.totalChunks}"
+                  data-host="${sanitizeHtml(job.sourceHost)}"
+                  data-port="${job.sourcePort}"
+                  type="button">
+            <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+              <path d="M3 3v5h5"/>
+              <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+              <path d="M16 21h5v-5"/>
+            </svg>
+            <span>Auto-Recover Missing Chunks over TCP</span>
+          </button>
+        </div>
+      `;
+    } else if (job.status === 'COMPLETED') {
+      return `
+        <div class="job-actions-toolbar" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap;">
+          <button class="btn btn-sm btn-primary save-to-device-btn" 
+                  data-fileid="${sanitizeHtml(job.fileId)}"
+                  data-filename="${sanitizeHtml(job.fileName)}"
+                  type="button"
+                  title="Download this reassembled file directly to your computer">
+            <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+              <polyline points="7 10 12 15 17 10"/>
+              <line x1="12" x2="12" y1="15" y2="3"/>
+            </svg>
+            <span>Save to Device</span>
+          </button>
+          <button class="btn btn-sm btn-outline recorrupt-transfer-btn" 
+                  data-fileid="${sanitizeHtml(job.fileId)}"
+                  data-filename="${sanitizeHtml(job.fileName)}"
+                  data-totalchunks="${job.totalChunks}"
+                  data-host="${sanitizeHtml(job.sourceHost)}"
+                  data-port="${job.sourcePort}"
+                  type="button"
+                  title="Simulate transmission failure by re-dropping chunks and testing download safeguards">
+            <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/>
+            </svg>
+            <span>Re-Corrupt File</span>
+          </button>
+        </div>
+      `;
+    }
+    return '';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Rendering: Active Transfers & Chunk Matrix Monitor (In-Place Scroll Stable)
   // ---------------------------------------------------------------------------
   function renderTransfersList() {
     const jobs = Array.from(STATE.downloadJobs.values());
@@ -536,15 +607,27 @@
 
     DOM.transfersEmptyState.hidden = true;
     DOM.transfersEmptyState.style.setProperty('display', 'none', 'important');
-    DOM.transfersCardList.innerHTML = '';
 
     // Sort jobs: DOWNLOADING/PENDING first, then COMPLETED/FAILED
     jobs.sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
 
+    // Remove cards for jobs that no longer exist
+    const activeFileIds = new Set(jobs.map(j => j.fileId));
+    Array.from(DOM.transfersCardList.children).forEach(child => {
+      const cardFileId = child.getAttribute('data-job-fileid');
+      if (cardFileId && !activeFileIds.has(cardFileId)) {
+        child.remove();
+      }
+    });
+
     jobs.forEach(job => {
-      const card = document.createElement('div');
       const statusLower = (job.status || 'PENDING').toLowerCase();
-      card.className = `transfer-job-item status-${statusLower}`;
+      const totalChunks = parseInt(job.totalChunks, 10) || 1;
+      const chunkStates = job.chunkStates || {};
+      const chunkRetries = job.chunkRetries || {};
+      const progress = job.progressPercentage ? Math.min(100, Math.max(0, job.progressPercentage)) : 0;
+      const progressFormatted = progress.toFixed(1);
+      const elapsed = formatDuration(job.startTime, job.endTime);
 
       let badgeClass = 'badge-subtle';
       let statusIcon = '';
@@ -559,20 +642,9 @@
         statusIcon = `<svg class="icon" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/></svg>`;
       }
 
-      const progress = job.progressPercentage ? Math.min(100, Math.max(0, job.progressPercentage)) : 0;
-      const progressFormatted = progress.toFixed(1);
-      const elapsed = formatDuration(job.startTime, job.endTime);
-
-      // Render Visual Chunk Ribbon / Grid
-      let chunkGridHtml = '';
-      const totalChunks = parseInt(job.totalChunks, 10) || 1;
-      const chunkStates = job.chunkStates || {};
-      const chunkRetries = job.chunkRetries || {};
-
-      for (let i = 0; i < totalChunks; i++) {
+      function getChunkInfo(i) {
         const state = (chunkStates[i] || chunkStates[String(i)] || 'PENDING').toUpperCase();
         const retries = chunkRetries[i] || chunkRetries[String(i)] || 0;
-
         let cellClass = 'chunk-pending';
         let stateLabel = 'Pending';
         if (state === 'COMPLETED') {
@@ -588,126 +660,180 @@
           cellClass = 'chunk-failed';
           stateLabel = 'Failed';
         }
-
-        const retryBadgeHtml = retries > 0 ? `<span class="chunk-retry-badge" title="${retries} Retries">x${retries}</span>` : '';
-
-        chunkGridHtml += `
-          <div class="chunk-cell ${cellClass}" title="Chunk #${i}: ${stateLabel} (Retries: ${retries})">
-            <span>#${i}</span>
-            ${retryBadgeHtml}
-          </div>
-        `;
+        return { cellClass, stateLabel, retries };
       }
 
-      const errorCalloutHtml = job.errorMessage ? `
-        <div class="job-error-callout">
-          <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>
-          </svg>
-          <span>${sanitizeHtml(job.errorMessage)}</span>
-        </div>
-      ` : '';
+      let card = DOM.transfersCardList.querySelector(`[data-job-fileid="${job.fileId}"]`);
 
-      let actionsToolbarHtml = '';
-      if (job.status === 'FAILED') {
-        actionsToolbarHtml = `
-          <div class="job-actions-toolbar" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap;">
-            <button class="btn btn-sm btn-outline recorrupt-transfer-btn" 
-                    data-fileid="${sanitizeHtml(job.fileId)}"
-                    data-filename="${sanitizeHtml(job.fileName)}"
-                    data-totalchunks="${job.totalChunks}"
-                    data-host="${sanitizeHtml(job.sourceHost)}"
-                    data-port="${job.sourcePort}"
-                    type="button"
-                    title="Re-corrupt chunks #5 and #15 and restart transfer">
-              <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/>
-              </svg>
-              <span>Re-Corrupt File</span>
-            </button>
-            <button class="btn btn-sm btn-primary recover-transfer-btn" 
-                    data-fileid="${sanitizeHtml(job.fileId)}"
-                    data-filename="${sanitizeHtml(job.fileName)}"
-                    data-totalchunks="${job.totalChunks}"
-                    data-host="${sanitizeHtml(job.sourceHost)}"
-                    data-port="${job.sourcePort}"
-                    type="button">
-              <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
-                <path d="M3 3v5h5"/>
-                <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
-                <path d="M16 21h5v-5"/>
-              </svg>
-              <span>Auto-Recover Missing Chunks over TCP</span>
-            </button>
-          </div>
-        `;
-      } else if (job.status === 'COMPLETED') {
-        actionsToolbarHtml = `
-          <div class="job-actions-toolbar" style="display: flex; gap: 8px; justify-content: flex-end; margin-top: 12px; flex-wrap: wrap;">
-            <button class="btn btn-sm btn-primary save-to-device-btn" 
-                    data-fileid="${sanitizeHtml(job.fileId)}"
-                    data-filename="${sanitizeHtml(job.fileName)}"
-                    type="button"
-                    title="Download this reassembled file directly to your computer">
-              <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
-                <polyline points="7 10 12 15 17 10"/>
-                <line x1="12" x2="12" y1="15" y2="3"/>
-              </svg>
-              <span>Save to Device</span>
-            </button>
-            <button class="btn btn-sm btn-outline recorrupt-transfer-btn" 
-                    data-fileid="${sanitizeHtml(job.fileId)}"
-                    data-filename="${sanitizeHtml(job.fileName)}"
-                    data-totalchunks="${job.totalChunks}"
-                    data-host="${sanitizeHtml(job.sourceHost)}"
-                    data-port="${job.sourcePort}"
-                    type="button"
-                    title="Simulate transmission failure by re-dropping chunks and testing download safeguards">
-              <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/>
-              </svg>
-              <span>Re-Corrupt File</span>
-            </button>
-          </div>
-        `;
-      }
+      if (card) {
+        // --- IN-PLACE UPDATE (PRESERVES SCROLL POSITION COMPLETELY!) ---
+        card.className = `transfer-job-item status-${statusLower}`;
 
-      card.innerHTML = `
-        <div class="job-header-row">
-          <div class="job-title-group">
-            <span class="job-file-name">${sanitizeHtml(job.fileName || 'file.bin')}</span>
-            <span class="job-source-tag mono">${sanitizeHtml(job.sourceHost)}:${job.sourcePort}</span>
-            <span class="badge ${badgeClass} mono">${statusIcon} ${job.status}</span>
-          </div>
-          <div class="job-metrics-group">
-            <span class="job-elapsed-time mono">Duration: ${elapsed}</span>
-          </div>
-        </div>
+        // Update badge
+        const badgeEl = card.querySelector('.job-status-badge');
+        if (badgeEl) {
+          badgeEl.className = `badge ${badgeClass} mono job-status-badge`;
+          badgeEl.innerHTML = `${statusIcon} ${job.status}`;
+        }
 
-        <div class="job-progress-wrapper">
-          <div class="progress-track">
-            <div class="progress-fill ${job.status === 'COMPLETED' ? 'fill-completed' : job.status === 'FAILED' ? 'fill-failed' : ''}" style="width: ${progressFormatted}%"></div>
-          </div>
-          <div class="job-progress-meta">
-            <span class="mono">${job.completedChunks || 0} / ${job.totalChunks || 0} chunks assembled</span>
+        // Update duration
+        const durationEl = card.querySelector('.job-elapsed-time');
+        if (durationEl) {
+          durationEl.textContent = `Duration: ${elapsed}`;
+        }
+
+        // Update progress bar
+        const progressFill = card.querySelector('.progress-fill');
+        if (progressFill) {
+          progressFill.className = `progress-fill ${job.status === 'COMPLETED' ? 'fill-completed' : job.status === 'FAILED' ? 'fill-failed' : ''}`;
+          progressFill.style.width = `${progressFormatted}%`;
+        }
+
+        const progressMeta = card.querySelector('.job-progress-meta');
+        if (progressMeta) {
+          progressMeta.innerHTML = `
+            <span class="mono">${job.completedChunks || 0} / ${totalChunks} chunks assembled</span>
             <span class="mono">${progressFormatted}%</span>
+          `;
+        }
+
+        // Update individual chunk cells in grid without touching scroll
+        const grid = card.querySelector('.chunk-ribbon-grid');
+        if (grid) {
+          if (grid.children.length === totalChunks) {
+            for (let i = 0; i < totalChunks; i++) {
+              const cell = grid.children[i];
+              const info = getChunkInfo(i);
+              const expectedClass = `chunk-cell ${info.cellClass}`;
+              if (cell.className !== expectedClass) {
+                cell.className = expectedClass;
+              }
+              const expectedTitle = `Chunk #${i}: ${info.stateLabel} (Retries: ${info.retries})`;
+              if (cell.title !== expectedTitle) {
+                cell.title = expectedTitle;
+              }
+              const existingBadge = cell.querySelector('.chunk-retry-badge');
+              if (info.retries > 0) {
+                if (!existingBadge) {
+                  const b = document.createElement('span');
+                  b.className = 'chunk-retry-badge';
+                  b.title = `${info.retries} Retries`;
+                  b.textContent = `x${info.retries}`;
+                  cell.appendChild(b);
+                } else if (existingBadge.textContent !== `x${info.retries}`) {
+                  existingBadge.textContent = `x${info.retries}`;
+                }
+              } else if (existingBadge) {
+                existingBadge.remove();
+              }
+            }
+          } else {
+            // Number of chunks changed, rebuild grid and preserve scroll
+            const prevScroll = grid.scrollTop;
+            let chunkGridHtml = '';
+            for (let i = 0; i < totalChunks; i++) {
+              const info = getChunkInfo(i);
+              const retryBadgeHtml = info.retries > 0 ? `<span class="chunk-retry-badge" title="${info.retries} Retries">x${info.retries}</span>` : '';
+              chunkGridHtml += `
+                <div class="chunk-cell ${info.cellClass}" title="Chunk #${i}: ${info.stateLabel} (Retries: ${info.retries})">
+                  <span>#${i}</span>
+                  ${retryBadgeHtml}
+                </div>
+              `;
+            }
+            grid.innerHTML = chunkGridHtml;
+            grid.scrollTop = prevScroll;
+          }
+        }
+
+        // Update error callout and toolbar if status changed
+        const lastStatus = card.getAttribute('data-last-status');
+        if (lastStatus !== job.status) {
+          card.setAttribute('data-last-status', job.status);
+          const errorCalloutEl = card.querySelector('.job-error-callout-container');
+          if (errorCalloutEl) {
+            errorCalloutEl.innerHTML = job.errorMessage ? `
+              <div class="job-error-callout">
+                <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>
+                </svg>
+                <span>${sanitizeHtml(job.errorMessage)}</span>
+              </div>
+            ` : '';
+          }
+          const toolbarEl = card.querySelector('.job-actions-toolbar-container');
+          if (toolbarEl) {
+            toolbarEl.innerHTML = buildActionsToolbarHtml(job);
+          }
+        }
+      } else {
+        // --- FIRST RENDER OF THIS CARD ---
+        card = document.createElement('div');
+        card.className = `transfer-job-item status-${statusLower}`;
+        card.setAttribute('data-job-fileid', job.fileId);
+        card.setAttribute('data-last-status', job.status);
+        card.id = `job-card-${job.fileId}`;
+
+        let chunkGridHtml = '';
+        for (let i = 0; i < totalChunks; i++) {
+          const info = getChunkInfo(i);
+          const retryBadgeHtml = info.retries > 0 ? `<span class="chunk-retry-badge" title="${info.retries} Retries">x${info.retries}</span>` : '';
+          chunkGridHtml += `
+            <div class="chunk-cell ${info.cellClass}" title="Chunk #${i}: ${info.stateLabel} (Retries: ${info.retries})">
+              <span>#${i}</span>
+              ${retryBadgeHtml}
+            </div>
+          `;
+        }
+
+        const errorCalloutHtml = job.errorMessage ? `
+          <div class="job-error-callout">
+            <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/><line x1="12" x2="12" y1="8" y2="12"/><line x1="12" x2="12.01" y1="16" y2="16"/>
+            </svg>
+            <span>${sanitizeHtml(job.errorMessage)}</span>
           </div>
-        </div>
+        ` : '';
 
-        <div class="chunk-matrix-section">
-          <span class="chunk-matrix-label">Chunk Assembly Stream (${totalChunks} Total)</span>
-          <div class="chunk-ribbon-grid">
-            ${chunkGridHtml}
+        card.innerHTML = `
+          <div class="job-header-row">
+            <div class="job-title-group">
+              <span class="job-file-name">${sanitizeHtml(job.fileName || 'file.bin')}</span>
+              <span class="job-source-tag mono">${sanitizeHtml(job.sourceHost)}:${job.sourcePort}</span>
+              <span class="badge ${badgeClass} mono job-status-badge">${statusIcon} ${job.status}</span>
+            </div>
+            <div class="job-metrics-group">
+              <span class="job-elapsed-time mono">Duration: ${elapsed}</span>
+            </div>
           </div>
-        </div>
 
-        ${errorCalloutHtml}
-        ${actionsToolbarHtml}
-      `;
+          <div class="job-progress-wrapper">
+            <div class="progress-track">
+              <div class="progress-fill ${job.status === 'COMPLETED' ? 'fill-completed' : job.status === 'FAILED' ? 'fill-failed' : ''}" style="width: ${progressFormatted}%"></div>
+            </div>
+            <div class="job-progress-meta">
+              <span class="mono">${job.completedChunks || 0} / ${totalChunks} chunks assembled</span>
+              <span class="mono">${progressFormatted}%</span>
+            </div>
+          </div>
 
-      DOM.transfersCardList.appendChild(card);
+          <div class="chunk-matrix-section">
+            <span class="chunk-matrix-label">Chunk Assembly Stream (${totalChunks} Total)</span>
+            <div class="chunk-ribbon-grid">
+              ${chunkGridHtml}
+            </div>
+          </div>
+
+          <div class="job-error-callout-container">
+            ${errorCalloutHtml}
+          </div>
+          <div class="job-actions-toolbar-container">
+            ${buildActionsToolbarHtml(job)}
+          </div>
+        `;
+
+        DOM.transfersCardList.appendChild(card);
+      }
     });
   }
 

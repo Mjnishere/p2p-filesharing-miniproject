@@ -529,13 +529,13 @@
 
     if (jobs.length === 0) {
       DOM.transfersEmptyState.hidden = false;
-      DOM.transfersEmptyState.style.display = 'flex';
+      DOM.transfersEmptyState.style.setProperty('display', 'flex', 'important');
       DOM.transfersCardList.innerHTML = '';
       return;
     }
 
     DOM.transfersEmptyState.hidden = true;
-    DOM.transfersEmptyState.style.display = 'none';
+    DOM.transfersEmptyState.style.setProperty('display', 'none', 'important');
     DOM.transfersCardList.innerHTML = '';
 
     // Sort jobs: DOWNLOADING/PENDING first, then COMPLETED/FAILED
@@ -978,43 +978,29 @@
     try {
       totalChunks = parseInt(totalChunks, 10) || 1;
 
+      // 1. If file is locally shared on this node, download directly to device
+      const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
+      if (existingShared) {
+        showToast('success', 'Local File Available', `Saving "${fileName}" directly to your device...`);
+        triggerBrowserDownload(fileId, fileName);
+        return;
+      }
+
+      // 2. If file has already been downloaded and reassembled on this node, save to device
+      const existingJob = STATE.downloadJobs.get(fileId);
+      if (existingJob && existingJob.status === 'COMPLETED') {
+        showToast('success', 'File Ready on Node', `"${fileName}" is already assembled. Saving to your device...`);
+        triggerBrowserDownload(fileId, fileName);
+        return;
+      }
+
       // Smooth scroll to transfers section
       const transfersPanel = document.getElementById('panelTransfers');
       if (transfersPanel) {
         transfersPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
 
-      // 1. If job is already completed on this node, or file is locally shared:
-      const existingJob = STATE.downloadJobs.get(fileId);
-      const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
-
-      if ((existingJob && existingJob.status === 'COMPLETED') || existingShared) {
-        // Ensure this job exists in STATE.downloadJobs with COMPLETED chunk matrix so it renders
-        if (!existingJob || existingJob.status !== 'COMPLETED') {
-          const compChunks = {};
-          for (let i = 0; i < totalChunks; i++) compChunks[i] = 'COMPLETED';
-          STATE.downloadJobs.set(fileId, {
-            fileId,
-            fileName: fileName || (existingShared ? existingShared.name : 'file.bin'),
-            totalChunks,
-            sourceHost: sourceHost || '127.0.0.1',
-            sourcePort: sourcePort || 9001,
-            status: 'COMPLETED',
-            completedChunks: totalChunks,
-            progressPercentage: 100,
-            startTime: Date.now() - 1000,
-            endTime: Date.now(),
-            chunkStates: compChunks,
-            chunkRetries: {}
-          });
-        }
-        renderTransfersList();
-        showToast('success', 'File Ready on Node', `"${fileName}" is reassembled. Saving to your device now...`);
-        triggerBrowserDownload(fileId, fileName);
-        return;
-      }
-
-      // 2. Optimistic initial render: Immediately show active transfer in Chunk Assembly Matrix
+      // 3. Optimistic initial render: Show this downloading file in the Chunk Assembly Matrix
       const initialChunkStates = {};
       for (let i = 0; i < totalChunks; i++) {
         initialChunkStates[i] = (i === 0 ? 'DOWNLOADING' : 'PENDING');
@@ -1035,7 +1021,7 @@
       STATE.downloadJobs.set(fileId, initialJob);
       renderTransfersList();
 
-      // 3. Mark for auto-download to device once transfer completes
+      // 4. Mark for auto-download to device once transfer completes
       STATE.pendingDeviceDownloads.add(fileId);
       showToast('info', 'Transfer Initiated', `Streaming "${fileName}" from ${sourceHost}:${sourcePort}... Chunks will assemble in real-time.`);
 
@@ -1402,8 +1388,8 @@
       if (downloadBtn) {
         const fileId = downloadBtn.getAttribute('data-fileid');
         const fileName = downloadBtn.getAttribute('data-filename');
-        const totalChunks = parseInt(downloadBtn.getAttribute('data-totalchunks'), 10) || 1;
-        startDownloadJob(fileId, fileName, totalChunks, '127.0.0.1', 9001);
+        showToast('info', 'Saving to Device', `Downloading "${fileName}" to your computer...`);
+        triggerBrowserDownload(fileId, fileName);
         return;
       }
 

@@ -1628,7 +1628,8 @@ body {
    Empty States
    -------------------------------------------------------------------------- */
 [hidden],
-.empty-state[hidden] {
+.empty-state[hidden],
+#transfersEmptyState[hidden] {
   display: none !important;
 }
 

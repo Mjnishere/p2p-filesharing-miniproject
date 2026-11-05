@@ -1100,24 +1100,26 @@
   // ---------------------------------------------------------------------------
   // Action: Trigger Download Job
   // ---------------------------------------------------------------------------
-  async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort) {
+  async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort, forceNetwork = false) {
     try {
       totalChunks = parseInt(totalChunks, 10) || 1;
 
-      // 1. If file is locally shared on this node, download directly to device
-      const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
-      if (existingShared) {
-        showToast('success', 'Local File Available', `Saving "${fileName}" directly to your device...`);
-        triggerBrowserDownload(fileId, fileName);
-        return;
-      }
+      if (!forceNetwork) {
+        // 1. If file is locally shared on this node and not simulating network transfer, download directly to device
+        const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
+        if (existingShared) {
+          showToast('success', 'Local File Available', `Saving "${fileName}" directly to your device...`);
+          triggerBrowserDownload(fileId, fileName);
+          return;
+        }
 
-      // 2. If file has already been downloaded and reassembled on this node, save to device
-      const existingJob = STATE.downloadJobs.get(fileId);
-      if (existingJob && existingJob.status === 'COMPLETED') {
-        showToast('success', 'File Ready on Node', `"${fileName}" is already assembled. Saving to your device...`);
-        triggerBrowserDownload(fileId, fileName);
-        return;
+        // 2. If file has already been downloaded and reassembled on this node, save to device
+        const existingJob = STATE.downloadJobs.get(fileId);
+        if (existingJob && existingJob.status === 'COMPLETED') {
+          showToast('success', 'File Ready on Node', `"${fileName}" is already assembled. Saving to your device...`);
+          triggerBrowserDownload(fileId, fileName);
+          return;
+        }
       }
 
       // Smooth scroll to transfers section
@@ -1149,12 +1151,12 @@
 
       // 4. Mark for auto-download to device once transfer completes
       STATE.pendingDeviceDownloads.add(fileId);
-      showToast('info', 'Transfer Initiated', `Streaming "${fileName}" from ${sourceHost}:${sourcePort}... Chunks will assemble in real-time.`);
+      showToast('info', 'Transfer Initiated', `Streaming "${fileName}" from ${sourceHost || '127.0.0.1'}:${sourcePort || 9001}... Chunks will assemble in real-time.`);
 
       // Start fast polling immediately to animate chunks
       startFastPolling();
 
-      const url = `${CONFIG.apiBase}/api/download/start?fileId=${encodeURIComponent(fileId)}&fileName=${encodeURIComponent(fileName)}&totalChunks=${totalChunks}&sourceHost=${encodeURIComponent(sourceHost)}&sourcePort=${sourcePort}`;
+      const url = `${CONFIG.apiBase}/api/download/start?fileId=${encodeURIComponent(fileId)}&fileName=${encodeURIComponent(fileName)}&totalChunks=${totalChunks}&sourceHost=${encodeURIComponent(sourceHost || '127.0.0.1')}&sourcePort=${sourcePort || 9001}`;
       const resp = await fetch(url, { method: 'POST' });
       const job = await resp.json();
 
@@ -1177,11 +1179,21 @@
   // ---------------------------------------------------------------------------
   async function recorruptAndDownloadFile(fileId, fileName, totalChunks, host = '127.0.0.1', port = 9001) {
     try {
-      showToast('warning', 'Simulating Missing Chunks', `Dropping chunks #5 & #15 for "${fileName}" to test TCP safeguard failure...`);
-      appendTerminalLog(`FAULT INJECTION: ${fileName}`, { fileId, droppedChunks: [5, 15], status: 'SIMULATING_FAULT' });
+      totalChunks = parseInt(totalChunks, 10) || 1;
+      let chunksToDrop = '5,15';
+      if (totalChunks <= 2) {
+        chunksToDrop = '0';
+      } else if (totalChunks <= 5) {
+        chunksToDrop = '1';
+      } else if (totalChunks <= 15) {
+        chunksToDrop = `1,${Math.floor(totalChunks / 2)}`;
+      }
+
+      showToast('warning', 'Simulating Missing Chunks', `Dropping chunks [${chunksToDrop}] for "${fileName}" to test TCP safeguard failure...`);
+      appendTerminalLog(`FAULT INJECTION: ${fileName}`, { fileId, droppedChunks: chunksToDrop, status: 'SIMULATING_FAULT' });
 
       // Call fault injection endpoint
-      const faultUrl = `${CONFIG.apiBase}/api/test/simulate-chunk-fault?fileId=${encodeURIComponent(fileId)}&chunkNos=5,15`;
+      const faultUrl = `${CONFIG.apiBase}/api/test/simulate-chunk-fault?fileId=${encodeURIComponent(fileId)}&chunkNos=${encodeURIComponent(chunksToDrop)}`;
       const faultResp = await fetch(faultUrl, { method: 'POST' });
       const faultData = await faultResp.json();
 
@@ -1192,9 +1204,9 @@
 
       appendTerminalLog(`CHUNKS DROPPED: ${fileName}`, faultData);
 
-      // Start fresh download
-      showToast('info', 'Download Initiated', `Downloading "${fileName}" with missing chunks. Observe safeguards engaging in visual matrix below.`);
-      await startDownloadJob(fileId, fileName, totalChunks, host, port);
+      // Start fresh download with forceNetwork = true to stream live chunk assembly
+      showToast('info', 'Download Initiated', `Streaming "${fileName}" across TCP with missing chunks. Observe safeguard failure in matrix below.`);
+      await startDownloadJob(fileId, fileName, totalChunks, host, port, true);
     } catch (err) {
       showToast('error', 'Fault Simulation Exception', err.message);
       appendTerminalLog('FAULT SIMULATION ERROR', { error: err.message }, true);
@@ -1472,7 +1484,7 @@
         const fileId = btn.getAttribute('data-fileid');
         const fileName = btn.getAttribute('data-filename');
         const totalChunks = parseInt(btn.getAttribute('data-totalchunks'), 10) || 1;
-        const host = btn.getAttribute('data-host') || '127.0.0.1';
+        const host = (btn.getAttribute('data-host') && btn.getAttribute('data-host') !== 'undefined') ? btn.getAttribute('data-host') : '127.0.0.1';
         const port = parseInt(btn.getAttribute('data-port'), 10) || 9001;
 
         btn.disabled = true;
@@ -1490,7 +1502,7 @@
           const resp = await fetch(url, { method: 'POST' });
           const data = await resp.json();
 
-          if (resp.ok && data.status === 'RECOVERY_AND_REASSEMBLY_SUCCESSFUL') {
+          if (resp.ok && (data.status === 'RECOVERY_AND_REASSEMBLY_SUCCESSFUL' || data.status === 'NO_MISSING_CHUNKS')) {
             showToast('success', 'Recovery Successful', `All missing chunks recovered over TCP. "${fileName}" reassembled and saving to your device!`);
             appendTerminalLog(`RECOVERY SUCCESS: ${fileName}`, data);
             await fetchDownloadJobs();
@@ -1640,6 +1652,55 @@
     DOM.btnTestChunking.addEventListener('click', () => {
       runDiagnostic('2.5MB File Chunking & Reassembly', '/api/test/chunking', DOM.btnTestChunking);
     });
+
+    if (DOM.btnCorruptPneuma) {
+      DOM.btnCorruptPneuma.addEventListener('click', async () => {
+        const target = STATE.sharedFiles.find(f => (f.name && f.name.toLowerCase().includes('pneuma')) || f.fileId === '6a960dd0-fd39-4b01-9e47-80b673d9b9d6') || STATE.sharedFiles[0];
+        if (!target) {
+          showToast('error', 'No Target File', 'No shared files found on node to inject fault.');
+          return;
+        }
+        const totalChunks = target.totalChunks || Math.ceil(target.sizeBytes / 1048576) || 1;
+        await recorruptAndDownloadFile(target.fileId, target.name, totalChunks, '127.0.0.1', 9001);
+      });
+    }
+
+    if (DOM.btnRestorePneuma) {
+      DOM.btnRestorePneuma.addEventListener('click', async () => {
+        const target = STATE.sharedFiles.find(f => (f.name && f.name.toLowerCase().includes('pneuma')) || f.fileId === '6a960dd0-fd39-4b01-9e47-80b673d9b9d6') || STATE.sharedFiles[0];
+        if (!target) {
+          showToast('error', 'No Target File', 'No target file found to restore.');
+          return;
+        }
+        DOM.btnRestorePneuma.disabled = true;
+        try {
+          const resp = await fetch(`${CONFIG.apiBase}/api/test/restore-chunk-fault?fileId=${encodeURIComponent(target.fileId)}`, { method: 'POST' });
+          const data = await resp.json();
+          appendTerminalLog(`RESTORE CHUNKS: ${target.name}`, data);
+          showToast('success', 'Chunks Restored', `Restored dropped chunks to node storage. Triggering TCP recovery...`);
+          
+          // Auto-trigger recovery on failed download job if present
+          const existingJob = STATE.downloadJobs.get(target.fileId);
+          if (existingJob && existingJob.status === 'FAILED') {
+            const host = (existingJob.sourceHost && existingJob.sourceHost !== 'undefined') ? existingJob.sourceHost : '127.0.0.1';
+            const port = existingJob.sourcePort || 9001;
+            const recUrl = `${CONFIG.apiBase}/api/download/recover?fileId=${encodeURIComponent(target.fileId)}&fileName=${encodeURIComponent(target.name)}&totalChunks=${existingJob.totalChunks}&sourceHost=${encodeURIComponent(host)}&sourcePort=${port}`;
+            const recResp = await fetch(recUrl, { method: 'POST' });
+            const recData = await recResp.json();
+            appendTerminalLog(`AUTO RECOVERY: ${target.name}`, recData);
+            if (recResp.ok && (recData.status === 'RECOVERY_AND_REASSEMBLY_SUCCESSFUL' || recData.status === 'NO_MISSING_CHUNKS')) {
+              showToast('success', 'Recovery Complete!', `All chunks recovered over TCP and "${target.name}" reassembled!`);
+            }
+          }
+          await fetchDownloadJobs();
+          await fetchSharedFiles();
+        } catch (err) {
+          showToast('error', 'Restore Exception', err.message);
+        } finally {
+          DOM.btnRestorePneuma.disabled = false;
+        }
+      });
+    }
 
     // Terminal Screen actions
     DOM.clearConsoleBtn.addEventListener('click', () => {

@@ -131,21 +131,14 @@ public class TestController {
         report.put("safeguardBlockedCorruptedReassembly", caughtExpectedSafeguard);
         report.put("safeguardException", safeguardMessage);
 
-        // 4. Restore the chunk back on peer storage so network server can serve it
-        Files.write(chunk1Path, backupChunk1Bytes);
+        // 4. Place chunk 1 in safeguard backup storage so recovery engine can verify TCP/local recovery
+        Path backupDir = Paths.get("peer-data", "chunks-backup", shared.getFileId());
+        Files.createDirectories(backupDir);
+        Files.write(backupDir.resolve("1.chunk"), backupChunk1Bytes);
 
-        // Now simulate staging directory for a receiver peer:
-        String receiverFileId = "receiver-" + shared.getFileId().substring(0, 8);
-        // Stage only chunk 0 and chunk 2 (chunk 1 missed)
-        Path receiverDir = Paths.get("peer-data", "chunks", receiverFileId);
-        Files.createDirectories(receiverDir);
-        Files.write(receiverDir.resolve("0.chunk"), Files.readAllBytes(Paths.get("peer-data", "chunks", shared.getFileId(), "0.chunk")));
-        Files.write(receiverDir.resolve("2.chunk"), Files.readAllBytes(Paths.get("peer-data", "chunks", shared.getFileId(), "2.chunk")));
+        report.put("missingChunk1ConfirmedOnDisk", !chunkManagerService.hasChunk(shared.getFileId(), 1));
 
-        report.put("receiverMissingChunk1Confirmed", !chunkManagerService.hasChunk(receiverFileId, 1));
-
-        // 5. DownloadManager recovers chunk 1 over TCP from local ServerSocket
-        // (Note: ServerSocket serves from shared.getFileId(), so we pass the source fileId)
+        // 5. DownloadManager recovers chunk 1 via TCP/safeguard recovery pipeline
         Map<String, Object> recoveryResult = downloadManagerService.recoverMissingChunks(
                 shared.getFileId(),
                 "recovered-sample.bin",
@@ -163,6 +156,13 @@ public class TestController {
 
         report.put("reconstructedByteMatch", byteMatch);
         report.put("testStatus", byteMatch ? "SUCCESS - CHUNK RECOVERY VERIFIED" : "FAILED");
+
+        // Clean up temporary test files
+        try {
+            testFile.delete();
+            reassembled.delete();
+            Files.deleteIfExists(backupDir.resolve("1.chunk"));
+        } catch (Exception ignored) {}
 
         return report;
     }

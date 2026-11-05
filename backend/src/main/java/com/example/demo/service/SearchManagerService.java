@@ -12,6 +12,9 @@ import org.springframework.stereotype.Service;
 
 import java.io.DataInputStream;
 import java.io.DataOutputStream;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.NetworkInterface;
 import java.net.Socket;
 import java.sql.*;
 import java.util.*;
@@ -28,6 +31,9 @@ public class SearchManagerService {
     @Value("${peer.tcp.port:9001}")
     private int myTcpPort;
 
+    @Value("${peer.host:}")
+    private String configuredHost;
+
     private final NetworkService networkService;
 
     private final ObjectMapper objectMapper = new ObjectMapper();
@@ -36,22 +42,48 @@ public class SearchManagerService {
         this.networkService = networkService;
     }
 
-    // Query local SQLite for files matching keyword (case-insensitive substring)
+    public String getAdvertisedHost() {
+        if (configuredHost != null && !configuredHost.isBlank()) {
+            return configuredHost.trim();
+        }
+        try {
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface iface = interfaces.nextElement();
+                if (iface.isLoopback() || !iface.isUp()) continue;
+                Enumeration<InetAddress> addresses = iface.getInetAddresses();
+                while (addresses.hasMoreElements()) {
+                    InetAddress addr = addresses.nextElement();
+                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
+                        return addr.getHostAddress();
+                    }
+                }
+            }
+            return InetAddress.getLocalHost().getHostAddress();
+        } catch (Exception e) {
+            return "127.0.0.1";
+        }
+    }
+
+    // Query local SQLite for files matching keyword or fileId (case-insensitive substring)
     public List<SearchResult> searchLocalFiles(String keyword) {
         List<SearchResult> results = new ArrayList<>();
-        String sql = "SELECT file_id, name, size_bytes FROM files WHERE name LIKE ?";
+        String sql = "SELECT file_id, name, size_bytes FROM files WHERE name LIKE ? OR file_id LIKE ?";
 
         try (Connection conn = DriverManager.getConnection(dbUrl);
              PreparedStatement ps = conn.prepareStatement(sql)) {
-            ps.setString(1, "%" + keyword + "%");
+            String wildcard = "%" + (keyword != null ? keyword.trim() : "") + "%";
+            ps.setString(1, wildcard);
+            ps.setString(2, wildcard);
             try (ResultSet rs = ps.executeQuery()) {
+                String host = getAdvertisedHost();
                 while (rs.next()) {
                     results.add(new SearchResult(
                             rs.getString("file_id"),
                             rs.getString("name"),
                             rs.getLong("size_bytes"),
                             myPeerId,
-                            "127.0.0.1",
+                            host,
                             myTcpPort
                     ));
                 }

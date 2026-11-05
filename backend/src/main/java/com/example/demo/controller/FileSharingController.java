@@ -7,10 +7,16 @@ import modell.PeerInfo;
 import modell.SearchResult;
 import modell.SharedFile;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.http.HttpStatus;
 import org.springframework.web.bind.annotation.*;
+import org.springframework.web.multipart.MultipartFile;
 
 import java.io.File;
+import java.io.FileNotFoundException;
 import java.io.IOException;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.nio.file.Paths;
 import java.sql.SQLException;
 import java.util.Collection;
 import java.util.List;
@@ -53,6 +59,41 @@ public class FileSharingController {
         );
     }
 
+    // Upload a file directly from browser drag-and-drop: writes to staging, slices into 1 MB chunks, registers in SQLite
+    @PostMapping(value = "/files/upload", consumes = {"multipart/form-data"})
+    public Map<String, Object> uploadFile(@RequestParam("file") MultipartFile multipartFile,
+                                          @RequestParam(defaultValue = "peer-1") String ownerPeerId) throws IOException, SQLException {
+        if (multipartFile.isEmpty()) {
+            throw new IllegalArgumentException("Uploaded file is empty");
+        }
+        Path uploadDir = Paths.get("peer-data", "uploads").toAbsolutePath();
+        Files.createDirectories(uploadDir);
+        String originalFilename = multipartFile.getOriginalFilename();
+        String safeName = (originalFilename != null && !originalFilename.isBlank()) ? originalFilename : "uploaded-file.bin";
+        Path targetPath = uploadDir.resolve(safeName);
+        Files.copy(multipartFile.getInputStream(), targetPath, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+
+        SharedFile shared = chunkManagerService.splitAndRegisterFile(targetPath.toFile(), ownerPeerId);
+        int totalChunks = (int) Math.ceil((double) shared.getSizeBytes() / ChunkManagerService.CHUNK_SIZE);
+
+        return Map.of(
+                "status", "SHARED",
+                "fileId", shared.getFileId(),
+                "fileName", shared.getName(),
+                "sizeBytes", shared.getSizeBytes(),
+                "totalChunks", totalChunks
+        );
+    }
+
+    @ExceptionHandler(FileNotFoundException.class)
+    @ResponseStatus(HttpStatus.NOT_FOUND)
+    public Map<String, Object> handleFileNotFound(FileNotFoundException e) {
+        return Map.of(
+            "status", "ERROR",
+            "message", "File not found on host filesystem: " + e.getMessage() + ". For files outside the project root, please drag & drop the file directly."
+        );
+    }
+
     // Distributed search with hop-by-hop TTL decrement and loop suppression
     @GetMapping("/search")
     public Map<String, Object> search(@RequestParam String q,
@@ -86,6 +127,100 @@ public class FileSharingController {
     @GetMapping("/download/all")
     public Collection<DownloadManagerService.DownloadJob> listAllDownloads() {
         return downloadManagerService.getAllJobs();
+    }
+
+    // Recover missing chunks and reassemble file with byte integrity verification
+    @PostMapping("/download/recover")
+    public Map<String, Object> recoverDownload(@RequestParam String fileId,
+                                               @RequestParam String fileName,
+                                               @RequestParam int totalChunks,
+                                               @RequestParam(defaultValue = "127.0.0.1") String sourceHost,
+                                               @RequestParam(defaultValue = "9001") int sourcePort) throws IOException {
+        return downloadManagerService.recoverMissingChunks(fileId, fileName, totalChunks, sourceHost, sourcePort);
+    }
+
+    // Diagnostic simulation: artificially drop specific chunks to test recovery
+    @PostMapping("/test/simulate-chunk-fault")
+    public Map<String, Object> simulateChunkFault(@RequestParam String fileId,
+                                                  @RequestParam(defaultValue = "5,15") String chunkNos) throws IOException {
+        Path simulatedDir = Paths.get("peer-data", "simulated-missing", fileId).toAbsolutePath();
+        Path chunksDir = Paths.get("peer-data", "chunks", fileId).toAbsolutePath();
+        Path backupDir = Paths.get("peer-data", "chunks-backup", fileId).toAbsolutePath();
+        Files.createDirectories(simulatedDir);
+        List<Integer> dropped = new java.util.ArrayList<>();
+
+        for (String cStr : chunkNos.split(",")) {
+            try {
+                int c = Integer.parseInt(cStr.trim());
+                Path chunkPath = chunksDir.resolve(c + ".chunk");
+                Path backupChunk = backupDir.resolve(c + ".chunk");
+                Path destSim = simulatedDir.resolve(c + ".chunk");
+
+                // Ensure we have backup before removing from chunksDir
+                if (!Files.exists(backupChunk) && Files.exists(chunkPath)) {
+                    Files.createDirectories(backupDir);
+                    Files.copy(chunkPath, backupChunk, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+
+                if (Files.exists(chunkPath)) {
+                    Files.move(chunkPath, destSim, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    dropped.add(c);
+                } else if (Files.exists(destSim)) {
+                    dropped.add(c);
+                }
+            } catch (NumberFormatException ignored) {}
+        }
+
+        // Clean up previously reconstructed output file so recovery can be proven fresh
+        SharedFile shared = chunkManagerService.getAllSharedFiles().stream()
+                .filter(f -> f.getFileId().equals(fileId))
+                .findFirst().orElse(null);
+        if (shared != null) {
+            Path reconstructed = Paths.get("peer-data", "reconstructed", shared.getName()).toAbsolutePath();
+            Files.deleteIfExists(reconstructed);
+        }
+
+        // Reset the active download job so user can download again fresh
+        downloadManagerService.resetJob(fileId);
+
+        return Map.of(
+            "status", "CHUNKS_CORRUPTED",
+            "fileId", fileId,
+            "droppedChunks", dropped,
+            "message", "Dropped chunks " + dropped + " from node storage. Active download job reset."
+        );
+    }
+
+    // Diagnostic simulation: restore all dropped chunks back to peer storage
+    @PostMapping("/test/restore-chunk-fault")
+    public Map<String, Object> restoreChunkFault(@RequestParam String fileId) throws IOException {
+        Path simulatedDir = Paths.get("peer-data", "simulated-missing", fileId).toAbsolutePath();
+        Path backupDir = Paths.get("peer-data", "chunks-backup", fileId).toAbsolutePath();
+        Path chunksDir = Paths.get("peer-data", "chunks", fileId).toAbsolutePath();
+        List<String> restored = new java.util.ArrayList<>();
+
+        if (Files.exists(simulatedDir)) {
+            try (var stream = Files.list(simulatedDir)) {
+                for (Path p : stream.toList()) {
+                    Files.move(p, chunksDir.resolve(p.getFileName()), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    restored.add(p.getFileName().toString());
+                }
+            }
+        } else if (Files.exists(backupDir)) {
+            try (var stream = Files.list(backupDir)) {
+                for (Path p : stream.toList()) {
+                    Files.copy(p, chunksDir.resolve(p.getFileName()), java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                    restored.add(p.getFileName().toString());
+                }
+            }
+        }
+
+        return Map.of(
+            "status", "CHUNKS_RESTORED",
+            "fileId", fileId,
+            "restoredChunks", restored,
+            "message", "All chunks restored back into peer node storage."
+        );
     }
 
     // List all known peer endpoints

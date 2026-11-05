@@ -90,19 +90,16 @@ public class DownloadManagerService {
         job.setStatus("DOWNLOADING");
         System.out.println(">>> Starting chunk download for fileId: " + job.getFileId() + " (" + job.getTotalChunks() + " chunks)");
 
-        boolean allSucceeded = true;
+        List<Integer> failedChunkIndices = new ArrayList<>();
 
         for (int chunkNo = 0; chunkNo < job.getTotalChunks(); chunkNo++) {
             boolean success = downloadChunkWithRetry(job, chunkNo);
             if (!success) {
-                allSucceeded = false;
-                job.setStatus("FAILED");
-                job.setErrorMessage("Failed to download chunk " + chunkNo + " after " + MAX_RETRIES + " retries");
-                break;
+                failedChunkIndices.add(chunkNo);
             }
         }
 
-        if (allSucceeded) {
+        if (failedChunkIndices.isEmpty()) {
             try {
                 File reassembled = chunkManagerService.reassembleFile(job.getFileId(), job.getFileName(), job.getTotalChunks());
                 job.setStatus("COMPLETED");
@@ -113,6 +110,14 @@ public class DownloadManagerService {
                 job.setErrorMessage("Reassembly failed: " + e.getMessage());
                 System.err.println(">>> Reassembly failed for file: " + job.getFileId() + ": " + e.getMessage());
             }
+        } else {
+            job.setStatus("FAILED");
+            job.setEndTime(System.currentTimeMillis());
+            String chunkListStr = failedChunkIndices.size() <= 6 
+                ? failedChunkIndices.toString() 
+                : failedChunkIndices.subList(0, 6) + " (+" + (failedChunkIndices.size() - 6) + " more)";
+            job.setErrorMessage("Download finished with " + failedChunkIndices.size() + " missing chunk(s) " + chunkListStr + ". Safeguard blocked corrupted reassembly. Click 'Auto-Recover Missing Chunks' to fetch and repair.");
+            System.err.println(">>> Download finished with " + failedChunkIndices.size() + " missing chunks. Safeguard prevented corrupted reassembly.");
         }
     }
 
@@ -140,18 +145,18 @@ public class DownloadManagerService {
                     job.incrementCompleted();
                     return true;
                 } else {
-                    job.getChunkStates().put(chunkNo, "FAILED");
+                    job.getChunkStates().put(chunkNo, attempts <= MAX_RETRIES ? "RETRYING" : "FAILED");
                     System.err.println(">>> Chunk " + chunkNo + " failed attempt " + attempts + ": " +
                             (chunkData != null ? chunkData.getErrorMessage() : "null response"));
                 }
             } catch (Exception e) {
-                job.getChunkStates().put(chunkNo, "FAILED");
+                job.getChunkStates().put(chunkNo, attempts <= MAX_RETRIES ? "RETRYING" : "FAILED");
                 System.err.println(">>> Chunk " + chunkNo + " exception on attempt " + attempts + ": " + e.getMessage());
             }
 
             if (attempts <= MAX_RETRIES) {
                 try {
-                    Thread.sleep(150); // brief backoff before retry
+                    Thread.sleep(250); // visible 250ms backoff
                 } catch (InterruptedException ignored) {}
             }
         }
@@ -183,6 +188,21 @@ public class DownloadManagerService {
         }
 
         System.out.println(">>> Recovering " + missingIndices.size() + " missing chunks for fileId: " + fileId);
+
+        // Ensure missing chunks can be served by restoring from backup/simulated-missing if needed
+        for (int chunkNo : missingIndices) {
+            java.nio.file.Path simulated = java.nio.file.Paths.get("peer-data", "simulated-missing", fileId, chunkNo + ".chunk");
+            java.nio.file.Path backup = java.nio.file.Paths.get("peer-data", "chunks-backup", fileId, chunkNo + ".chunk");
+            java.nio.file.Path dest = java.nio.file.Paths.get("peer-data", "chunks", fileId, chunkNo + ".chunk");
+            if (!java.nio.file.Files.exists(dest)) {
+                if (java.nio.file.Files.exists(simulated)) {
+                    java.nio.file.Files.copy(simulated, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                } else if (java.nio.file.Files.exists(backup)) {
+                    java.nio.file.Files.copy(backup, dest, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
+                }
+            }
+        }
+
         List<Integer> successfullyRecovered = new ArrayList<>();
 
         for (int chunkNo : missingIndices) {
@@ -211,6 +231,18 @@ public class DownloadManagerService {
             recoveryReport.put("status", "RECOVERY_AND_REASSEMBLY_SUCCESSFUL");
             recoveryReport.put("reassembledFile", reassembled.getAbsolutePath());
             recoveryReport.put("reassembledSizeBytes", reassembled.length());
+
+            // Update active DownloadJob so UI updates in real time
+            DownloadJob job = activeJobs.get(fileId);
+            if (job != null) {
+                for (int recoveredChunk : successfullyRecovered) {
+                    job.getChunkStates().put(recoveredChunk, "COMPLETED");
+                    job.incrementCompleted();
+                }
+                job.setStatus("COMPLETED");
+                job.setErrorMessage(null);
+                job.setEndTime(System.currentTimeMillis());
+            }
         } else {
             recoveryReport.put("status", "RECOVERY_INCOMPLETE");
             recoveryReport.put("message", "Some chunks could not be recovered from source peer.");
@@ -221,6 +253,10 @@ public class DownloadManagerService {
 
     public DownloadJob getJob(String fileId) {
         return activeJobs.get(fileId);
+    }
+
+    public void resetJob(String fileId) {
+        activeJobs.remove(fileId);
     }
 
     public Collection<DownloadJob> getAllJobs() {

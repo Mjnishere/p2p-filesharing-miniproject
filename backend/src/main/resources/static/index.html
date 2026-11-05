@@ -1,0 +1,637 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>P2P Node Console &mdash; Distributed File Manager</title>
+  <link rel="stylesheet" href="styles.css">
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%236366F1' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpolygon points='12 2 2 7 12 12 22 7 12 2'/%3E%3Cpolyline points='2 17 12 22 22 17'/%3E%3Cpolyline points='2 12 12 17 22 12'/%3E%3C/svg%3E">
+</head>
+<body>
+  <!-- Offline Service Notification Banner -->
+  <div id="offlineBanner" class="offline-banner" role="alert" aria-live="polite" hidden>
+    <div class="offline-banner-content">
+      <svg class="icon icon-alert" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+        <path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/>
+        <line x1="12" x2="12" y1="9" y2="13"/>
+        <line x1="12" x2="12.01" y1="17" y2="17"/>
+      </svg>
+      <span>Peer node backend unreachable on <code class="mono">localhost:8081</code>. Retrying connection...</span>
+      <button id="retryConnectionBtn" class="btn btn-xs btn-outline" type="button">Retry Now</button>
+    </div>
+  </div>
+
+  <div class="app-layout">
+    <!-- Header & Node Telemetry Surface -->
+    <header class="app-header">
+      <div class="header-container">
+        <div class="header-brand">
+          <div class="brand-symbol" aria-hidden="true">
+            <svg class="brand-icon" viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+              <polyline points="2 17 12 22 22 17"/>
+              <polyline points="2 12 12 17 22 12"/>
+            </svg>
+          </div>
+          <div class="brand-titles">
+            <h1 class="brand-title">P2P Node Console</h1>
+            <span class="brand-caption">Distributed Chunk Storage &amp; Framing Protocol</span>
+          </div>
+        </div>
+
+        <!-- Node Telemetry Chips -->
+        <div class="header-telemetry">
+          <div class="telemetry-badge status-badge" id="nodeHealthBadge" title="Node Service Status">
+            <span class="status-dot status-dot-online" id="nodeHealthDot"></span>
+            <span class="status-label" id="nodeHealthText">CONNECTING</span>
+          </div>
+
+          <div class="telemetry-badge" title="Local Peer Identity">
+            <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <rect width="20" height="8" x="2" y="2" rx="2" ry="2"/>
+              <rect width="20" height="8" x="2" y="14" rx="2" ry="2"/>
+              <line x1="6" x2="6.01" y1="6" y2="6"/>
+              <line x1="6" x2="6.01" y1="18" y2="18"/>
+            </svg>
+            <span class="mono" id="nodeIdDisplay">peer-1</span>
+            <button class="copy-btn-inline" data-copy="peer-1" title="Copy Peer ID" type="button">
+              <svg class="icon icon-copy" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+                <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+              </svg>
+            </button>
+          </div>
+
+          <div class="telemetry-badge" title="TCP Framing Socket Port">
+            <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+              <path d="M5 12h14M12 5l7 7-7 7"/>
+            </svg>
+            <span class="mono" id="tcpPortDisplay">TCP :9001</span>
+          </div>
+        </div>
+
+        <!-- Header Actions: Theme & Polling Controls -->
+        <div class="header-controls">
+          <div class="auto-refresh-control" title="Poll status every 3 seconds">
+            <label class="toggle-switch">
+              <input type="checkbox" id="autoRefreshToggle" checked>
+              <span class="toggle-slider"></span>
+            </label>
+            <span class="control-label">Live Poll</span>
+            <span class="pulse-indicator" id="pollIndicator" title="Polling active"></span>
+          </div>
+
+          <button id="manualRefreshBtn" class="btn btn-icon btn-secondary" type="button" title="Sync Node Data (Shortcut: R)" aria-label="Refresh node data">
+            <svg class="icon icon-refresh" id="refreshIcon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/>
+              <path d="M21 3v5h-5"/>
+              <path d="M21 12a9 9 0 0 1-15 6.7L3 16"/>
+              <path d="M3 21v-5h5"/>
+            </svg>
+          </button>
+
+          <button id="themeToggleBtn" class="btn btn-icon btn-secondary" type="button" title="Toggle Theme" aria-label="Toggle light or dark theme">
+            <!-- Sun Icon (shown in dark theme) -->
+            <svg class="icon icon-sun theme-icon-sun" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="4"/>
+              <path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M6.34 17.66l-1.41 1.41M19.07 4.93l-1.41 1.41"/>
+            </svg>
+            <!-- Moon Icon (shown in light theme) -->
+            <svg class="icon icon-moon theme-icon-moon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Quick Metrics Strip -->
+      <div class="metrics-strip">
+        <div class="metrics-container">
+          <div class="metric-cell">
+            <span class="metric-label">Shared Files</span>
+            <span class="metric-value mono" id="statSharedCount">0</span>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-cell">
+            <span class="metric-label">Storage Managed</span>
+            <span class="metric-value mono" id="statStorageUsed">0 KB</span>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-cell">
+            <span class="metric-label">Active Transfers</span>
+            <span class="metric-value mono" id="statActiveDownloads">0</span>
+          </div>
+          <div class="metric-divider"></div>
+          <div class="metric-cell">
+            <span class="metric-label">Mesh Peers</span>
+            <span class="metric-value mono" id="statPeersCount">0</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Workspace (2-Column Grid) -->
+    <main class="main-workspace">
+      <div class="workspace-grid">
+        
+        <!-- Left / Primary Operations Column -->
+        <div class="column-primary">
+
+          <!-- Panel 1: Local File Sharing & Chunking -->
+          <section class="panel-section" id="panelFileShare">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <svg class="icon icon-panel" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  <polyline points="17 8 12 3 7 8"/>
+                  <line x1="12" x2="12" y1="3" y2="15"/>
+                </svg>
+                <h2 class="panel-title">File Slicing &amp; Seeding</h2>
+              </div>
+              <span class="badge badge-subtle mono">1 MB Chunk Size</span>
+            </div>
+
+            <div class="panel-body">
+              <!-- Dropzone Drag & Drop Area -->
+              <div class="dropzone-area" id="fileDropzone" tabindex="0" role="button" aria-label="Drop file to share or click to browse">
+                <input type="file" id="dropzoneFileInput" class="visually-hidden">
+                <div class="dropzone-visual">
+                  <svg class="icon icon-upload-cloud" viewBox="0 0 24 24" width="32" height="32" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <path d="M4 14.899A7 7 0 1 1 15.71 8h1.79a4.5 4.5 0 0 1 2.5 8.242"/>
+                    <path d="M12 12v9"/>
+                    <path d="m16 16-4-4-4 4"/>
+                  </svg>
+                  <p class="dropzone-prompt"><strong>Drag &amp; drop a file here</strong> or <span class="dropzone-browse-text">browse node filesystem</span></p>
+                  <span class="dropzone-note">Sets host path for binary partitioning and SQLite indexation</span>
+                </div>
+              </div>
+
+              <!-- Share Form -->
+              <form id="shareFileForm" class="form-flow" autocomplete="off">
+                <div class="form-row form-row-split">
+                  <div class="form-field flex-3">
+                    <label for="shareFilePathInput" class="form-label">Local File Path on Host</label>
+                    <div class="input-with-icon">
+                      <svg class="field-icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                        <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>
+                        <polyline points="14 2 14 8 20 8"/>
+                      </svg>
+                      <input type="text" id="shareFilePathInput" class="form-input mono" placeholder="e.g. test-sample.bin or /path/to/source.dat" required>
+                    </div>
+                  </div>
+
+                  <div class="form-field flex-1">
+                    <label for="shareOwnerIdInput" class="form-label">Owner Peer ID</label>
+                    <input type="text" id="shareOwnerIdInput" class="form-input mono" value="peer-1" required>
+                  </div>
+                </div>
+
+                <!-- Quick Path Chips -->
+                <div class="sample-chips-bar">
+                  <span class="chips-label">Sample Node Paths:</span>
+                  <div class="chips-list">
+                    <button type="button" class="chip-btn mono" data-path="test-sample.bin" title="2.5 MB generated test file">test-sample.bin</button>
+                    <button type="button" class="chip-btn mono" data-path="recovery-sample.bin" title="Recovery sample binary">recovery-sample.bin</button>
+                    <button type="button" class="chip-btn mono" data-path="peer.db" title="SQLite metadata database">peer.db</button>
+                    <button type="button" class="chip-btn mono" data-path="pom.xml" title="Node Maven configuration">pom.xml</button>
+                  </div>
+                </div>
+
+                <div class="form-actions-bar">
+                  <div class="chunking-explainer">
+                    <svg class="icon icon-info" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <circle cx="12" cy="12" r="10"/>
+                      <line x1="12" x2="12" y1="16" y2="12"/>
+                      <line x1="12" x2="12.01" y1="8" y2="8"/>
+                    </svg>
+                    <span>Deterministic 1 MB slicing into <code class="mono">peer-data/chunks/{fileId}/{no}.chunk</code></span>
+                  </div>
+
+                  <button type="submit" id="shareSubmitBtn" class="btn btn-primary">
+                    <svg class="icon icon-upload" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                      <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                      <polyline points="17 8 12 3 7 8"/>
+                      <line x1="12" x2="12" y1="3" y2="15"/>
+                    </svg>
+                    <span>Share &amp; Chunk File</span>
+                  </button>
+                </div>
+              </form>
+            </div>
+          </section>
+
+          <!-- Panel 2: Distributed Network Search -->
+          <section class="panel-section" id="panelSearch">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <svg class="icon icon-panel" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <circle cx="11" cy="11" r="8"/>
+                  <path d="m21 21-4.3-4.3"/>
+                </svg>
+                <h2 class="panel-title">Distributed Network Search</h2>
+              </div>
+              <span class="badge badge-outline">Multi-hop Mesh</span>
+            </div>
+
+            <div class="panel-body">
+              <form id="networkSearchForm" class="search-form-bar" autocomplete="off">
+                <div class="search-input-wrapper">
+                  <svg class="field-icon" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="m21 21-4.3-4.3"/>
+                  </svg>
+                  <input type="text" id="networkSearchInput" class="form-input search-input" placeholder="Search filenames across mesh (e.g. sample, bin, data)... [Press / to focus]" required>
+                  <button type="button" id="clearSearchBtn" class="search-clear-btn" title="Clear query" hidden>
+                    <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <line x1="18" x2="6" y1="6" y2="18"/>
+                      <line x1="6" x2="18" y1="6" y2="18"/>
+                    </svg>
+                  </button>
+                </div>
+
+                <div class="ttl-selector-group" title="Time-To-Live: Decremented each peer hop. Prevents self-loop broadcast.">
+                  <label for="ttlSelect" class="ttl-label">TTL Hops:</label>
+                  <select id="ttlSelect" class="form-select mono">
+                    <option value="1">1 hop (Direct neighbors)</option>
+                    <option value="2">2 hops</option>
+                    <option value="3" selected>3 hops (Standard mesh)</option>
+                    <option value="5">5 hops (Wide network)</option>
+                    <option value="8">8 hops</option>
+                    <option value="10">10 hops (Max span)</option>
+                  </select>
+                </div>
+
+                <button type="submit" id="networkSearchBtn" class="btn btn-primary">
+                  <svg class="icon" viewBox="0 0 24 24" width="15" height="15" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="m21 21-4.3-4.3"/>
+                  </svg>
+                  <span>Search Mesh</span>
+                </button>
+              </form>
+
+              <!-- Search Results Table Surface -->
+              <div class="results-table-container">
+                <div id="searchResultsStateEmpty" class="empty-state">
+                  <svg class="icon icon-empty" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="m21 21-4.3-4.3"/>
+                    <line x1="11" x2="11.01" y1="8" y2="8"/>
+                    <line x1="11" x2="11" y1="11" y2="14"/>
+                  </svg>
+                  <p class="empty-title">No search queries executed</p>
+                  <p class="empty-desc">Enter a query above to query neighbor peers with automatic UUID loop suppression.</p>
+                </div>
+
+                <div id="searchResultsTableWrapper" hidden>
+                  <div class="table-meta-bar">
+                    <span class="results-count-text" id="searchResultsSummary">0 results found</span>
+                  </div>
+                  <div class="responsive-table-scroll">
+                    <table class="data-table">
+                      <thead>
+                        <tr>
+                          <th>File Name</th>
+                          <th>File Size</th>
+                          <th>Source Peer ID</th>
+                          <th>Peer Endpoint</th>
+                          <th class="th-action">Action</th>
+                        </tr>
+                      </thead>
+                      <tbody id="searchResultsTableBody">
+                        <!-- Injected by JavaScript -->
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Panel 3: Active Transfers & Chunk Matrix Monitor -->
+          <section class="panel-section" id="panelTransfers">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <svg class="icon icon-panel" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                  <polyline points="2 17 12 22 22 17"/>
+                  <polyline points="2 12 12 17 22 12"/>
+                </svg>
+                <h2 class="panel-title">Transfers &amp; Chunk Assembly Matrix</h2>
+              </div>
+              <div class="panel-header-actions">
+                <span class="chunk-legend-item"><span class="legend-chip chunk-pending"></span> Pending</span>
+                <span class="chunk-legend-item"><span class="legend-chip chunk-downloading"></span> Fetching</span>
+                <span class="chunk-legend-item"><span class="legend-chip chunk-completed"></span> Assembled</span>
+                <span class="chunk-legend-item"><span class="legend-chip chunk-failed"></span> Retrying</span>
+              </div>
+            </div>
+
+            <div class="panel-body">
+              <div id="transfersListContainer" class="transfers-container">
+                <!-- Empty State -->
+                <div id="transfersEmptyState" class="empty-state">
+                  <svg class="icon icon-empty" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <polyline points="7 10 12 15 17 10"/>
+                    <line x1="12" x2="12" y1="15" y2="3"/>
+                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
+                  </svg>
+                  <p class="empty-title">No active or recorded transfers</p>
+                  <p class="empty-desc">Initiate a download from search results or trigger diagnostic tests to watch real-time chunk streaming.</p>
+                </div>
+
+                <!-- Transfer cards dynamically inserted here -->
+                <div id="transfersCardList" class="transfer-card-list"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Panel 4: Local Shared Files Explorer -->
+          <section class="panel-section" id="panelSharedFiles">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <svg class="icon icon-panel" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/>
+                </svg>
+                <h2 class="panel-title">Locally Shared Files Explorer</h2>
+              </div>
+              <div class="panel-header-search">
+                <input type="text" id="sharedFilesFilterInput" class="form-input form-input-sm" placeholder="Filter shared files...">
+              </div>
+            </div>
+
+            <div class="panel-body no-pad">
+              <div class="responsive-table-scroll">
+                <table class="data-table" id="sharedFilesTable">
+                  <thead>
+                    <tr>
+                      <th>File ID</th>
+                      <th>File Name</th>
+                      <th>Size</th>
+                      <th>Chunks</th>
+                      <th>Host Original Path</th>
+                      <th class="th-action" style="text-align: right;">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="sharedFilesTableBody">
+                    <!-- Populated via JavaScript -->
+                  </tbody>
+                </table>
+              </div>
+
+              <div id="sharedFilesEmptyState" class="empty-state" hidden>
+                <svg class="icon icon-empty" viewBox="0 0 24 24" width="36" height="36" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/>
+                  <polyline points="14 2 14 8 20 8"/>
+                </svg>
+                <p class="empty-title">No shared files in local SQLite index</p>
+                <p class="empty-desc">Use the File Slicing panel above to split and catalog a file on this peer node.</p>
+              </div>
+            </div>
+          </section>
+
+        </div>
+
+        <!-- Right / Sidebar Column -->
+        <aside class="column-sidebar">
+
+          <!-- Card 1: Peer Network Mesh -->
+          <section class="panel-section" id="panelPeerMesh">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <svg class="icon icon-panel" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <rect x="16" y="16" width="6" height="6" rx="1"/>
+                  <rect x="2" y="16" width="6" height="6" rx="1"/>
+                  <rect x="9" y="2" width="6" height="6" rx="1"/>
+                  <path d="M5 16v-3a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v3"/>
+                  <path d="M12 12V8"/>
+                </svg>
+                <h2 class="panel-title">Peer Network Mesh</h2>
+              </div>
+              <button type="button" id="toggleRegisterPeerBtn" class="btn btn-xs btn-secondary" aria-expanded="false">
+                <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                  <line x1="12" x2="12" y1="5" y2="19"/>
+                  <line x1="5" x2="19" y1="12" y2="12"/>
+                </svg>
+                <span>Add Peer</span>
+              </button>
+            </div>
+
+            <div class="panel-body">
+              <!-- Register Peer Collapsible Section -->
+              <div id="registerPeerDrawer" class="drawer-box" hidden>
+                <form id="registerPeerForm" class="form-flow" autocomplete="off">
+                  <div class="drawer-header-row">
+                    <span class="drawer-title">Register Neighbor Node</span>
+                    <button type="button" id="closeRegisterDrawerBtn" class="btn-close-subtle" aria-label="Close form">
+                      <svg class="icon" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <line x1="18" x2="6" y1="6" y2="18"/>
+                        <line x1="6" x2="18" y1="6" y2="18"/>
+                      </svg>
+                    </button>
+                  </div>
+                  
+                  <div class="form-field">
+                    <label for="regPeerIdInput" class="form-label">Peer Identifier</label>
+                    <input type="text" id="regPeerIdInput" class="form-input form-input-sm mono" placeholder="e.g. peer-2" required>
+                  </div>
+
+                  <div class="form-row">
+                    <div class="form-field flex-2">
+                      <label for="regHostInput" class="form-label">Host IP / FQDN</label>
+                      <input type="text" id="regHostInput" class="form-input form-input-sm mono" value="127.0.0.1" required>
+                    </div>
+                    <div class="form-field flex-1">
+                      <label for="regPortInput" class="form-label">TCP Port</label>
+                      <input type="number" id="regPortInput" class="form-input form-input-sm mono" value="9002" min="1" max="65535" required>
+                    </div>
+                  </div>
+
+                  <button type="submit" class="btn btn-sm btn-primary btn-block">
+                    <span>Connect &amp; Register Peer</span>
+                  </button>
+                </form>
+              </div>
+
+              <!-- Peers List -->
+              <div id="peersListContainer" class="peers-list-flow">
+                <!-- Dynamically populated or empty state -->
+                <div id="peersEmptyState" class="empty-state empty-state-compact">
+                  <svg class="icon icon-empty" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="12" x2="12" y1="8" y2="12"/>
+                    <line x1="12" x2="12.01" y1="16" y2="16"/>
+                  </svg>
+                  <p class="empty-title">No remote peers joined</p>
+                  <p class="empty-desc">Click "Add Peer" to connect a secondary peer node to this network.</p>
+                </div>
+
+                <div id="peersDynamicList" class="peers-card-list"></div>
+              </div>
+            </div>
+          </section>
+
+          <!-- Card 2: Diagnostics & Protocol Testing Drawer -->
+          <section class="panel-section" id="panelDiagnostics">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <svg class="icon icon-panel" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="4 17 10 11 4 5"/>
+                  <line x1="12" x2="20" y1="19" y2="19"/>
+                </svg>
+                <h2 class="panel-title">Protocol &amp; Diagnostic Suite</h2>
+              </div>
+              <span class="badge badge-accent mono">Verification</span>
+            </div>
+
+            <div class="panel-body">
+              <div class="diag-actions-grid">
+                <!-- Diagnostic 1: Chunk Recovery Test -->
+                <div class="diag-action-item">
+                  <div class="diag-action-info">
+                    <div class="diag-action-title">
+                      <svg class="icon icon-diag" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10Z"/>
+                        <polyline points="9 12 11 14 15 10"/>
+                      </svg>
+                      <span>Chunk Recovery Test</span>
+                    </div>
+                    <p class="diag-action-desc">Simulates chunk corruption, verifies safeguard rejection, then re-fetches missing chunk over TCP for 100% byte integrity.</p>
+                  </div>
+                  <button type="button" id="btnTestRecovery" class="btn btn-sm btn-outline btn-block">
+                    <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polygon points="6 3 20 12 6 21 6 3"/>
+                    </svg>
+                    <span>Execute Recovery Test</span>
+                  </button>
+                </div>
+
+                <!-- Diagnostic 2: TCP Hello Handshake -->
+                <div class="diag-action-item">
+                  <div class="diag-action-info">
+                    <div class="diag-action-title">
+                      <svg class="icon icon-diag" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M5 12h14M12 5l7 7-7 7"/>
+                      </svg>
+                      <span>TCP Framing Handshake</span>
+                    </div>
+                    <p class="diag-action-desc">Dispatches low-level direct TCP packet with 4-byte big-endian length prefix to verify framing protocol.</p>
+                  </div>
+                  <button type="button" id="btnTestTcpHello" class="btn btn-sm btn-outline btn-block">
+                    <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polygon points="6 3 20 12 6 21 6 3"/>
+                    </svg>
+                    <span>Send TCP Hello Handshake</span>
+                  </button>
+                </div>
+
+                <!-- Diagnostic 3: 2.5MB File Chunking & Assembly -->
+                <div class="diag-action-item">
+                  <div class="diag-action-info">
+                    <div class="diag-action-title">
+                      <svg class="icon icon-diag" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polygon points="12 2 2 7 12 12 22 7 12 2"/>
+                        <polyline points="2 17 12 22 22 17"/>
+                        <polyline points="2 12 12 17 22 12"/>
+                      </svg>
+                      <span>File Chunking &amp; Assembly</span>
+                    </div>
+                    <p class="diag-action-desc">Generates 2.5 MB binary payload, partitions into 3 chunks, and verifies byte-for-byte reassembly accuracy.</p>
+                  </div>
+                  <button type="button" id="btnTestChunking" class="btn btn-sm btn-outline btn-block">
+                    <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <polygon points="6 3 20 12 6 21 6 3"/>
+                    </svg>
+                    <span>Test File Chunking</span>
+                  </button>
+                </div>
+
+                <!-- Diagnostic 4: Pneuma.flac Fault Injection & Recovery -->
+                <div class="diag-action-item">
+                  <div class="diag-action-info">
+                    <div class="diag-action-title">
+                      <svg class="icon icon-diag" viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0z"/>
+                        <line x1="12" y1="9" x2="12" y2="13"/>
+                        <line x1="12" y1="17" x2="12.01" y2="17"/>
+                      </svg>
+                      <span>Pneuma.flac Fault Injection</span>
+                    </div>
+                    <p class="diag-action-desc">Drop chunks #5 &amp; #15 on disk to demonstrate safeguard failure, or restore them for TCP reassembly.</p>
+                  </div>
+                  <div style="display: flex; gap: 8px;">
+                    <button type="button" id="btnCorruptPneuma" class="btn btn-sm btn-outline" style="flex: 1; border-color: var(--status-warning-border); color: var(--status-warning);">
+                      <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <circle cx="12" cy="12" r="10"/><line x1="4.93" x2="19.07" y1="4.93" y2="19.07"/>
+                      </svg>
+                      <span>Re-Corrupt (#5, #15)</span>
+                    </button>
+                    <button type="button" id="btnRestorePneuma" class="btn btn-sm btn-outline" style="flex: 1; border-color: var(--status-success-border); color: var(--status-success);">
+                      <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <polyline points="20 6 9 17 4 12"/>
+                      </svg>
+                      <span>Restore Chunks</span>
+                    </button>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Terminal Output Console -->
+              <div class="terminal-container">
+                <div class="terminal-header">
+                  <div class="terminal-dots">
+                    <span class="t-dot t-red"></span>
+                    <span class="t-dot t-yellow"></span>
+                    <span class="t-dot t-green"></span>
+                    <span class="terminal-label">Diagnostic Output Console</span>
+                  </div>
+                  <div class="terminal-actions">
+                    <button type="button" id="copyConsoleBtn" class="btn-term-action" title="Copy console output">
+                      <svg class="icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <rect width="14" height="14" x="8" y="8" rx="2" ry="2"/>
+                        <path d="M4 16c-1.1 0-2-.9-2-2V4c0-1.1.9-2 2-2h10c1.1 0 2 .9 2 2"/>
+                      </svg>
+                      <span>Copy</span>
+                    </button>
+                    <button type="button" id="clearConsoleBtn" class="btn-term-action" title="Clear console">
+                      <svg class="icon" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                        <path d="M3 6h18"/>
+                        <path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/>
+                      </svg>
+                      <span>Clear</span>
+                    </button>
+                  </div>
+                </div>
+                <div class="terminal-screen" id="consoleScreen">
+                  <pre class="terminal-pre" id="consolePre"><code class="mono" id="consoleCode">// P2P Protocol Console initialized. Ready for operations.</code></pre>
+                </div>
+              </div>
+            </div>
+          </section>
+
+        </aside>
+
+      </div>
+    </main>
+
+    <!-- Footer -->
+    <footer class="app-footer">
+      <div class="footer-container">
+        <div class="footer-left">
+          <span>Peer Node Operating Console &mdash; Port 8081 / TCP 9001</span>
+        </div>
+        <div class="footer-shortcuts">
+          <span class="shortcut-tip"><kbd class="kbd">/</kbd> Focus Search</span>
+          <span class="shortcut-tip"><kbd class="kbd">R</kbd> Sync</span>
+          <span class="shortcut-tip"><kbd class="kbd">Esc</kbd> Dismiss</span>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <!-- Non-intrusive Toast Container -->
+  <div id="toastContainer" class="toast-stack" aria-live="assertive" role="region"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>

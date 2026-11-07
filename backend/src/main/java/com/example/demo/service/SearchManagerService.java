@@ -58,17 +58,48 @@ public class SearchManagerService {
             }
         }
         try {
+            List<String> preferredIps = new ArrayList<>();
+            List<String> fallbackIps = new ArrayList<>();
+
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
             while (interfaces.hasMoreElements()) {
                 NetworkInterface iface = interfaces.nextElement();
-                if (iface.isLoopback() || !iface.isUp()) continue;
+                if (iface.isLoopback() || !iface.isUp() || iface.isVirtual()) continue;
+
+                String name = iface.getName().toLowerCase();
+                String displayName = iface.getDisplayName().toLowerCase();
+
+                // Skip virtual, container, and tunnel interfaces (Docker, WSL, VMware, VirtualBox, bridges, VPNs)
+                if (name.startsWith("docker") || name.startsWith("br-") || name.startsWith("veth")
+                        || name.startsWith("vmnet") || name.startsWith("vbox") || name.startsWith("virbr")
+                        || name.startsWith("tun") || name.startsWith("tap") || name.startsWith("cni")
+                        || name.startsWith("tailscale")
+                        || displayName.contains("docker") || displayName.contains("virtual")
+                        || displayName.contains("wsl") || displayName.contains("vmware")
+                        || displayName.contains("vbox")) {
+                    continue;
+                }
+
                 Enumeration<InetAddress> addresses = iface.getInetAddresses();
                 while (addresses.hasMoreElements()) {
                     InetAddress addr = addresses.nextElement();
-                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress()) {
-                        return addr.getHostAddress();
+                    if (addr instanceof Inet4Address && !addr.isLoopbackAddress() && !addr.isLinkLocalAddress()) {
+                        String ip = addr.getHostAddress();
+                        // Prioritize standard physical interfaces (en*, eth*, wlan*, wl*)
+                        if (name.startsWith("en") || name.startsWith("eth") || name.startsWith("wlan") || name.startsWith("wl")) {
+                            preferredIps.add(ip);
+                        } else {
+                            fallbackIps.add(ip);
+                        }
                     }
                 }
+            }
+
+            if (!preferredIps.isEmpty()) {
+                return preferredIps.get(0);
+            }
+            if (!fallbackIps.isEmpty()) {
+                return fallbackIps.get(0);
             }
             return InetAddress.getLocalHost().getHostAddress();
         } catch (Exception e) {

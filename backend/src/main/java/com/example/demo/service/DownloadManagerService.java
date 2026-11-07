@@ -170,6 +170,33 @@ public class DownloadManagerService {
             }
         }
 
+        // If primary host failed all attempts, try dynamic mesh peer fallback
+        if (searchManagerService != null) {
+            for (PeerInfo peer : searchManagerService.getKnownPeers()) {
+                if (peer.getHost().equals(job.getSourceHost()) && peer.getPort() == job.getSourcePort()) {
+                    continue;
+                }
+                try {
+                    job.getChunkStates().put(chunkNo, "DOWNLOADING");
+                    ChunkData chunkData = networkService.requestChunkFromPeer(
+                            peer.getHost(),
+                            peer.getPort(),
+                            job.getFileId(),
+                            chunkNo
+                    );
+                    if (chunkData != null && chunkData.isSuccess() && chunkData.getDataBase64() != null) {
+                        byte[] data = Base64.getDecoder().decode(chunkData.getDataBase64());
+                        chunkManagerService.saveChunkBytes(job.getFileId(), chunkNo, data);
+                        job.getChunkStates().put(chunkNo, "COMPLETED");
+                        job.incrementCompleted();
+                        System.out.println(">>> Chunk " + chunkNo + " successfully recovered via mesh peer " + peer.getHost() + ":" + peer.getPort());
+                        return true;
+                    }
+                } catch (Exception ignored) {}
+            }
+        }
+
+        job.getChunkStates().put(chunkNo, "FAILED");
         return false;
     }
 

@@ -166,8 +166,9 @@ public class NetworkService {
     }
 
     public ChunkData requestChunkFromPeer(String targetIp, int targetPort, String fileId, int chunkNo) throws IOException {
-        try (Socket socket = new Socket(targetIp, targetPort)) {
-            socket.setSoTimeout(5000); // 5 seconds timeout as per KPI-03 & Gate 2 spec
+        try (Socket socket = new Socket()) {
+            socket.connect(new java.net.InetSocketAddress(targetIp, targetPort), 3000); // 3s connect timeout
+            socket.setSoTimeout(5000); // 5s socket read timeout
             try (DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
                  DataInputStream dis = new DataInputStream(socket.getInputStream())) {
 

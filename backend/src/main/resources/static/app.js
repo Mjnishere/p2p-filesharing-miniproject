@@ -1611,19 +1611,24 @@
       const btn = e.target.closest('.ping-peer-btn');
       if (btn) {
         const peerId = btn.getAttribute('data-peerid');
-        const host = btn.getAttribute('data-host');
-        const port = btn.getAttribute('data-port');
+        const host = btn.getAttribute('data-host') || '127.0.0.1';
+        const port = btn.getAttribute('data-port') || 9001;
         
         btn.disabled = true;
         btn.textContent = 'Pinging...';
         try {
-          // Probe via /api/test/tcp-hello or report connectivity
-          const resp = await fetch(`${CONFIG.apiBase}/api/test/tcp-hello`);
+          // Send TCP HELLO ping to the specific peer endpoint
+          const resp = await fetch(`${CONFIG.apiBase}/api/test/tcp-hello?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}`);
+          if (!resp.ok) {
+            const errData = await resp.json().catch(() => ({}));
+            throw new Error(errData.message || `Connection to ${host}:${port} failed (HTTP ${resp.status})`);
+          }
           const data = await resp.json();
           appendTerminalLog(`PING PEER ${peerId} (${host}:${port})`, data);
-          showToast('success', `Peer ${peerId} Active`, `Handshake verified on TCP port ${port}.`);
+          showToast('success', `Peer ${peerId} Active`, `Handshake verified on TCP ${host}:${port}.`);
         } catch (err) {
-          showToast('error', `Peer ${peerId} Unreachable`, err.message);
+          appendTerminalLog(`PING PEER ${peerId} (${host}:${port}) FAILED`, { error: err.message });
+          showToast('error', `Peer ${peerId} Unreachable`, `Could not reach ${host}:${port}: ${err.message}`);
         } finally {
           btn.disabled = false;
           btn.textContent = 'Ping';

@@ -43,6 +43,9 @@ public class FileSharingController {
     @Autowired
     private DownloadManagerService downloadManagerService;
 
+    @Autowired
+    private com.example.demo.NetworkService networkService;
+
     // List all files shared by this peer node
     @GetMapping("/files")
     public List<SharedFile> listSharedFiles() {
@@ -310,6 +313,21 @@ public class FileSharingController {
         return Map.of(
                 "status", "REGISTERED",
                 "peer", peer
+        );
+    }
+
+    // Ping a remote peer over TCP to verify network connectivity
+    @GetMapping("/peers/ping")
+    public Map<String, Object> pingPeer(@RequestParam String host,
+                                        @RequestParam int port,
+                                        @RequestParam(defaultValue = "test-client") String peerId) throws IOException {
+        modell.NetworkMessage ping = new modell.NetworkMessage("HELLO", peerId, "Ping handshake");
+        String rawResponse = networkService.sendDirectMessage(host, port, ping);
+        return Map.of(
+                "status", "PONG",
+                "targetHost", host,
+                "targetPort", port,
+                "rawTcpResponseReceived", rawResponse
         );
     }
 

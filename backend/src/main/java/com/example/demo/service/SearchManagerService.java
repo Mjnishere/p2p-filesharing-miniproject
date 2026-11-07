@@ -45,7 +45,17 @@ public class SearchManagerService {
 
     public String getAdvertisedHost() {
         if (configuredHost != null && !configuredHost.isBlank()) {
-            return configuredHost.trim();
+            String trimmed = configuredHost.trim();
+            // Validate that configuredHost is actually assigned to an active interface on this machine
+            try {
+                InetAddress configuredAddr = InetAddress.getByName(trimmed);
+                NetworkInterface nif = NetworkInterface.getByInetAddress(configuredAddr);
+                if (nif != null && nif.isUp()) {
+                    return trimmed;
+                }
+            } catch (Exception ignored) {
+                // Configured host is stale/invalid; fall through to dynamic auto-detection
+            }
         }
         try {
             Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
@@ -198,8 +208,25 @@ public class SearchManagerService {
                         );
                         if (peerResults != null) {
                             for (SearchResult sr : peerResults) {
-                                if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
+                                // If the remote node reported the same peerId as our local node (e.g. both instances defaulted to 'peer-1'),
+                                // or sent an empty peerId, attribute it to the known registered peer identifier in our mesh (e.g. 'peer-2').
+                                if (sr.getSourcePeerId() == null || sr.getSourcePeerId().isBlank() || sr.getSourcePeerId().equals(myPeerId)) {
+                                    sr.setSourcePeerId(peer.getPeerId());
+                                }
+
+                                // If the search is a direct 1-hop search, or if the remote node returned an unreachable/loopback/stale IP
+                                // that doesn't match the actual socket host we connected to, overwrite with peer.getHost().
+                                if (sr.getSourceHost() == null 
+                                        || sr.getSourceHost().isBlank()
+                                        || "127.0.0.1".equals(sr.getSourceHost()) 
+                                        || "localhost".equalsIgnoreCase(sr.getSourceHost()) 
+                                        || "0.0.0.0".equals(sr.getSourceHost())
+                                        || initialTtl <= 1
+                                        || !sr.getSourceHost().equals(peer.getHost())) {
                                     sr.setSourceHost(peer.getHost());
+                                }
+                                if (sr.getSourcePort() <= 0) {
+                                    sr.setSourcePort(peer.getPort());
                                 }
                             }
                             aggregatedResults.addAll(peerResults);
@@ -258,8 +285,19 @@ public class SearchManagerService {
                             );
                             if (forwardedResults != null) {
                                 for (SearchResult sr : forwardedResults) {
-                                    if (sr.getSourceHost() == null || "127.0.0.1".equals(sr.getSourceHost()) || "localhost".equalsIgnoreCase(sr.getSourceHost()) || "0.0.0.0".equals(sr.getSourceHost())) {
+                                    if (sr.getSourcePeerId() == null || sr.getSourcePeerId().isBlank()) {
+                                        sr.setSourcePeerId(peer.getPeerId());
+                                    }
+                                    if (sr.getSourceHost() == null 
+                                            || sr.getSourceHost().isBlank()
+                                            || "127.0.0.1".equals(sr.getSourceHost()) 
+                                            || "localhost".equalsIgnoreCase(sr.getSourceHost()) 
+                                            || "0.0.0.0".equals(sr.getSourceHost())
+                                            || nextTtl <= 1) {
                                         sr.setSourceHost(peer.getHost());
+                                    }
+                                    if (sr.getSourcePort() <= 0) {
+                                        sr.setSourcePort(peer.getPort());
                                     }
                                 }
                                 results.addAll(forwardedResults);

@@ -72,13 +72,17 @@ public class TestController {
     }
 
     @GetMapping("/api/test/tcp-hello")
-    public Map<String, Object> testTcpHello() throws IOException {
+    public Map<String, Object> testTcpHello(
+            @RequestParam(defaultValue = "127.0.0.1") String host,
+            @RequestParam(required = false) Integer port) throws IOException {
+        int targetPort = (port != null && port > 0) ? port : tcpPort;
         NetworkMessage ping = new NetworkMessage("HELLO", "test-client", "Ping handshake");
-        String rawResponse = networkService.sendDirectMessage("127.0.0.1", tcpPort, ping);
+        String rawResponse = networkService.sendDirectMessage(host, targetPort, ping);
 
         return Map.of(
+                "targetHost", host,
+                "targetPort", targetPort,
                 "sentMessageType", "HELLO",
-                "targetPort", tcpPort,
                 "rawTcpResponseReceived", rawResponse
         );
     }

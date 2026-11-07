@@ -152,13 +152,16 @@ public class NetworkService {
     }
 
     public String sendDirectMessage(String targetIp, int targetPort, NetworkMessage message) throws IOException {
-        try (Socket socket = new Socket(targetIp, targetPort);
-             DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
-             DataInputStream dis = new DataInputStream(socket.getInputStream())) {
+        try (Socket socket = new Socket()) {
+            socket.connect(new java.net.InetSocketAddress(targetIp, targetPort), 2500);
+            socket.setSoTimeout(2500);
+            try (DataOutputStream dos = new DataOutputStream(socket.getOutputStream());
+                 DataInputStream dis = new DataInputStream(socket.getInputStream())) {
 
-            String rawJson = objectMapper.writeValueAsString(message);
-            FramingUtil.writeFrame(dos, rawJson);
-            return FramingUtil.readFrame(dis);
+                String rawJson = objectMapper.writeValueAsString(message);
+                FramingUtil.writeFrame(dos, rawJson);
+                return FramingUtil.readFrame(dis);
+            }
         }
     }
 

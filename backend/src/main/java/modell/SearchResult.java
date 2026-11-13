@@ -7,6 +7,8 @@ public class SearchResult {
     private String sourcePeerId;
     private String sourceHost;
     private int sourcePort;
+    private String fileHash;
+    private long rttMs;
 
     public SearchResult() {}
 
@@ -17,6 +19,17 @@ public class SearchResult {
         this.sourcePeerId = sourcePeerId;
         this.sourceHost = sourceHost;
         this.sourcePort = sourcePort;
+    }
+
+    public SearchResult(String fileId, String fileName, long sizeBytes, String sourcePeerId, String sourceHost, int sourcePort, String fileHash, long rttMs) {
+        this.fileId = fileId;
+        this.fileName = fileName;
+        this.sizeBytes = sizeBytes;
+        this.sourcePeerId = sourcePeerId;
+        this.sourceHost = sourceHost;
+        this.sourcePort = sourcePort;
+        this.fileHash = fileHash;
+        this.rttMs = rttMs;
     }
 
     public String getFileId() { return fileId; }
@@ -36,4 +49,10 @@ public class SearchResult {
 
     public int getSourcePort() { return sourcePort; }
     public void setSourcePort(int sourcePort) { this.sourcePort = sourcePort; }
+
+    public String getFileHash() { return fileHash; }
+    public void setFileHash(String fileHash) { this.fileHash = fileHash; }
+
+    public long getRttMs() { return rttMs; }
+    public void setRttMs(long rttMs) { this.rttMs = rttMs; }
 }

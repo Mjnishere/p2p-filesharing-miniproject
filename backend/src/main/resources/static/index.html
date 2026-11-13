@@ -395,6 +395,47 @@
         <!-- Right / Sidebar Column -->
         <aside class="column-sidebar">
 
+          <!-- Card 0: Cache & Mesh Telemetry -->
+          <section class="panel-section" id="panelTelemetry">
+            <div class="panel-header">
+              <div class="panel-title-group">
+                <svg class="icon icon-panel" viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+                </svg>
+                <h2 class="panel-title">Cache &amp; Mesh Telemetry</h2>
+              </div>
+              <span class="badge badge-accent mono" id="cacheHitLatencyChip">&lt; 0.5ms O(1)</span>
+            </div>
+
+            <div class="panel-body">
+              <div class="telemetry-stats-grid">
+                <div class="telemetry-stat-card">
+                  <span class="telemetry-stat-label">QueryCache Hits / Misses</span>
+                  <div class="telemetry-stat-row">
+                    <span class="telemetry-stat-value mono" id="telemetryHitsMisses">0 / 0</span>
+                    <span class="badge badge-subtle mono" id="telemetryHitRate">0.0%</span>
+                  </div>
+                </div>
+
+                <div class="telemetry-stat-card">
+                  <span class="telemetry-stat-label">Average Peer RTT</span>
+                  <div class="telemetry-stat-row">
+                    <span class="telemetry-stat-value mono" id="telemetryAvgRtt">-- ms</span>
+                    <span class="badge badge-subtle mono" id="telemetryRttStatus">Optimal</span>
+                  </div>
+                </div>
+
+                <div class="telemetry-stat-card">
+                  <span class="telemetry-stat-label">Active Swarms (SHA-256)</span>
+                  <div class="telemetry-stat-row">
+                    <span class="telemetry-stat-value mono" id="telemetrySwarmCount">0 swarms</span>
+                    <span class="badge badge-subtle mono" id="telemetryCachedQueries">0 queries</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </section>
+
           <!-- Card 1: Peer Network Mesh -->
           <section class="panel-section" id="panelPeerMesh">
             <div class="panel-header">
@@ -408,13 +449,25 @@
                 </svg>
                 <h2 class="panel-title">Peer Network Mesh</h2>
               </div>
-              <button type="button" id="toggleRegisterPeerBtn" class="btn btn-xs btn-secondary" aria-expanded="false">
-                <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                  <line x1="12" x2="12" y1="5" y2="19"/>
-                  <line x1="5" x2="19" y1="12" y2="12"/>
-                </svg>
-                <span>Add Peer</span>
-              </button>
+              <div class="panel-header-btn-group" style="display: flex; gap: 6px;">
+                <button type="button" id="scanNetworkBtn" class="btn btn-xs btn-primary" title="Scan local subnet & ports (9000-9005) for peers with live RTT measurement">
+                  <svg class="icon icon-scan" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <circle cx="12" cy="12" r="10"/>
+                    <line x1="2" x2="6" y1="12" y2="12"/>
+                    <line x1="18" x2="22" y1="12" y2="12"/>
+                    <line x1="12" x2="12" y1="2" y2="6"/>
+                    <line x1="12" x2="12" y1="18" y2="22"/>
+                  </svg>
+                  <span>Scan Network</span>
+                </button>
+                <button type="button" id="toggleRegisterPeerBtn" class="btn btn-xs btn-secondary" aria-expanded="false">
+                  <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                    <line x1="12" x2="12" y1="5" y2="19"/>
+                    <line x1="5" x2="19" y1="12" y2="12"/>
+                  </svg>
+                  <span>Add Peer</span>
+                </button>
+              </div>
             </div>
 
             <div class="panel-body">

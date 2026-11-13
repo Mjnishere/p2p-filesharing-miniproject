@@ -3,9 +3,9 @@ package com.example.demo.controller;
 import com.example.demo.service.ChunkManagerService;
 import com.example.demo.service.DownloadManagerService;
 import com.example.demo.service.SearchManagerService;
-import modell.PeerInfo;
-import modell.SearchResult;
-import modell.SharedFile;
+import com.fasterxml.jackson.core.type.TypeReference;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import modell.*;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.io.FileSystemResource;
 import org.springframework.core.io.Resource;
@@ -25,9 +25,7 @@ import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
 import java.sql.SQLException;
-import java.util.Collection;
-import java.util.List;
-import java.util.Map;
+import java.util.*;
 
 @RestController
 @RequestMapping("/api")
@@ -46,13 +44,15 @@ public class FileSharingController {
     @Autowired
     private com.example.demo.NetworkService networkService;
 
+    private final ObjectMapper objectMapper = new ObjectMapper();
+
     // List all files shared by this peer node
     @GetMapping("/files")
     public List<SharedFile> listSharedFiles() {
         return chunkManagerService.getAllSharedFiles();
     }
 
-    // Share a local file: slices into 1 MB chunks and registers in SQLite
+    // Share a local file: slices/registers and records in SQLite
     @PostMapping("/files/share")
     public Map<String, Object> shareFile(@RequestParam String filePath,
                                          @RequestParam(defaultValue = "peer-1") String ownerPeerId) throws IOException, SQLException {
@@ -65,11 +65,12 @@ public class FileSharingController {
                 "fileId", shared.getFileId(),
                 "fileName", shared.getName(),
                 "sizeBytes", shared.getSizeBytes(),
+                "fileHash", shared.getFileHash() != null ? shared.getFileHash() : "",
                 "totalChunks", totalChunks
         );
     }
 
-    // Upload a file directly from browser drag-and-drop: writes to staging, slices into 1 MB chunks, registers in SQLite
+    // Upload a file directly from browser drag-and-drop: writes to staging, registers in SQLite
     @PostMapping(value = "/files/upload", consumes = {"multipart/form-data"})
     public Map<String, Object> uploadFile(@RequestParam("file") MultipartFile multipartFile,
                                           @RequestParam(defaultValue = "peer-1") String ownerPeerId) throws IOException, SQLException {
@@ -91,6 +92,7 @@ public class FileSharingController {
                 "fileId", shared.getFileId(),
                 "fileName", shared.getName(),
                 "sizeBytes", shared.getSizeBytes(),
+                "fileHash", shared.getFileHash() != null ? shared.getFileHash() : "",
                 "totalChunks", totalChunks
         );
     }
@@ -108,8 +110,8 @@ public class FileSharingController {
             downloadManagerService.resetJob(targetId);
         }
         return Map.of(
-            "status", deleted ? "DELETED" : "NOT_FOUND",
-            "fileId", targetId
+                "status", deleted ? "DELETED" : "NOT_FOUND",
+                "fileId", targetId
         );
     }
 
@@ -117,8 +119,8 @@ public class FileSharingController {
     @ResponseStatus(HttpStatus.NOT_FOUND)
     public Map<String, Object> handleFileNotFound(FileNotFoundException e) {
         return Map.of(
-            "status", "ERROR",
-            "message", "File not found on host filesystem: " + e.getMessage() + ". For files outside the project root, please drag & drop the file directly."
+                "status", "ERROR",
+                "message", "File not found on host filesystem: " + e.getMessage() + ". For files outside the project root, please drag & drop the file directly."
         );
     }
 
@@ -135,23 +137,121 @@ public class FileSharingController {
         );
     }
 
-    // Trigger chunked download with per-chunk state machine and timeout retry
-    @PostMapping("/download/start")
-    public DownloadManagerService.DownloadJob startDownload(@RequestParam String fileId,
-                                                            @RequestParam String fileName,
-                                                            @RequestParam int totalChunks,
-                                                            @RequestParam String sourceHost,
-                                                            @RequestParam int sourcePort) {
-        return downloadManagerService.startDownload(fileId, fileName, totalChunks, sourceHost, sourcePort);
+    // Zero-Config Discovery: concurrent subnet and port scanning with live RTT measurement
+    @RequestMapping(value = "/peers/discover", method = {RequestMethod.POST, RequestMethod.GET})
+    public Map<String, Object> discoverPeers() {
+        List<PeerEndpoint> discovered = networkService.scanSubnetAndPorts();
+        return Map.of(
+                "status", "DISCOVERY_COMPLETED",
+                "count", discovered != null ? discovered.size() : 0,
+                "peers", discovered != null ? discovered : Collections.emptyList()
+        );
     }
 
-    // Poll download status and per-chunk states for Web UI progress bar
+    // Cache & Mesh Telemetry: returns QueryCache hits/misses, hit rate, active swarms, and average RTT
+    @GetMapping("/cache/stats")
+    public CacheStats getCacheStats() {
+        if (searchManagerService != null) {
+            return searchManagerService.getCacheStats();
+        }
+        return new CacheStats(0, 0, 0.0, 0, 0, 0, 0.0, Collections.emptyMap());
+    }
+
+    // Trigger download: supports zero-chunking streaming, swarm peers list, and legacy chunk parameters
+    @PostMapping(value = "/download/start")
+    public DownloadManagerService.DownloadJob startDownload(
+            @RequestParam(required = false) String fileId,
+            @RequestParam(required = false) String fileName,
+            @RequestParam(required = false) Long fileSize,
+            @RequestParam(required = false) String fileHash,
+            @RequestParam(required = false) Integer totalChunks,
+            @RequestParam(required = false) String sourceHost,
+            @RequestParam(required = false) Integer sourcePort,
+            @RequestBody(required = false) Map<String, Object> requestBody) {
+
+        String targetFileId = fileId;
+        String targetFileName = fileName;
+        Long targetFileSize = fileSize;
+        String targetFileHash = fileHash;
+        Integer targetTotalChunks = totalChunks;
+        String targetSourceHost = sourceHost;
+        Integer targetSourcePort = sourcePort;
+        List<PeerEndpoint> targetPeers = null;
+
+        // Extract from JSON request body if provided
+        if (requestBody != null && !requestBody.isEmpty()) {
+            if (targetFileId == null && requestBody.containsKey("fileId")) {
+                targetFileId = Objects.toString(requestBody.get("fileId"), null);
+            }
+            if (targetFileName == null && requestBody.containsKey("fileName")) {
+                targetFileName = Objects.toString(requestBody.get("fileName"), null);
+            }
+            if (targetFileSize == null && requestBody.containsKey("fileSize")) {
+                try {
+                    targetFileSize = Long.parseLong(Objects.toString(requestBody.get("fileSize")));
+                } catch (Exception ignored) {}
+            }
+            if (targetFileHash == null && requestBody.containsKey("fileHash")) {
+                targetFileHash = Objects.toString(requestBody.get("fileHash"), null);
+            }
+            if (targetTotalChunks == null && requestBody.containsKey("totalChunks")) {
+                try {
+                    targetTotalChunks = Integer.parseInt(Objects.toString(requestBody.get("totalChunks")));
+                } catch (Exception ignored) {}
+            }
+            if (targetSourceHost == null && requestBody.containsKey("sourceHost")) {
+                targetSourceHost = Objects.toString(requestBody.get("sourceHost"), null);
+            }
+            if (targetSourcePort == null && requestBody.containsKey("sourcePort")) {
+                try {
+                    targetSourcePort = Integer.parseInt(Objects.toString(requestBody.get("sourcePort")));
+                } catch (Exception ignored) {}
+            }
+            if (requestBody.containsKey("peers")) {
+                try {
+                    targetPeers = objectMapper.convertValue(
+                            requestBody.get("peers"),
+                            new TypeReference<List<PeerEndpoint>>() {}
+                    );
+                } catch (Exception ignored) {}
+            }
+        }
+
+        if (targetFileId == null || targetFileId.isBlank()) {
+            throw new IllegalArgumentException("fileId must be provided");
+        }
+        if (targetFileName == null || targetFileName.isBlank()) {
+            targetFileName = "download-" + targetFileId + ".bin";
+        }
+        if (targetTotalChunks == null || targetTotalChunks <= 0) {
+            targetTotalChunks = 1;
+        }
+        if (targetSourceHost == null || targetSourceHost.isBlank()) {
+            targetSourceHost = "127.0.0.1";
+        }
+        if (targetSourcePort == null || targetSourcePort <= 0) {
+            targetSourcePort = 9001;
+        }
+
+        return downloadManagerService.startDownload(
+                targetFileId,
+                targetFileName,
+                targetFileSize,
+                targetFileHash,
+                targetTotalChunks,
+                targetSourceHost,
+                targetSourcePort,
+                targetPeers
+        );
+    }
+
+    // Poll download status and live zero-chunking progress (bytesDownloaded, speedBytesPerSec, activeLanes)
     @GetMapping("/download/status")
     public DownloadManagerService.DownloadJob getDownloadStatus(@RequestParam String fileId) {
         return downloadManagerService.getJob(fileId);
     }
 
-    // List all active and completed downloads
+    // List all active and completed downloads with live progress
     @GetMapping("/download/all")
     public Collection<DownloadManagerService.DownloadJob> listAllDownloads() {
         return downloadManagerService.getAllJobs();
@@ -170,6 +270,12 @@ public class FileSharingController {
             if (job != null) {
                 jobFileName = job.getFileName();
                 jobTotalChunks = job.getTotalChunks();
+                if (job.getDestinationPath() != null) {
+                    File dest = new File(job.getDestinationPath());
+                    if (dest.exists() && dest.isFile()) {
+                        return createResourceResponse(dest, fileName != null ? fileName : jobFileName);
+                    }
+                }
             }
         }
 
@@ -182,6 +288,10 @@ public class FileSharingController {
                 ? fileName
                 : ((jobFileName != null && !jobFileName.isBlank()) ? jobFileName : file.getName());
 
+        return createResourceResponse(file, downloadName);
+    }
+
+    private ResponseEntity<Resource> createResourceResponse(File file, String downloadName) throws IOException {
         Resource resource = new FileSystemResource(file);
 
         ContentDisposition disposition = ContentDisposition.attachment()
@@ -221,7 +331,7 @@ public class FileSharingController {
         Path chunksDir = Paths.get("peer-data", "chunks", fileId).toAbsolutePath();
         Path backupDir = Paths.get("peer-data", "chunks-backup", fileId).toAbsolutePath();
         Files.createDirectories(simulatedDir);
-        List<Integer> dropped = new java.util.ArrayList<>();
+        List<Integer> dropped = new ArrayList<>();
 
         for (String cStr : chunkNos.split(",")) {
             try {
@@ -230,7 +340,6 @@ public class FileSharingController {
                 Path backupChunk = backupDir.resolve(c + ".chunk");
                 Path destSim = simulatedDir.resolve(c + ".chunk");
 
-                // Ensure we have backup before removing from chunksDir
                 if (!Files.exists(backupChunk) && Files.exists(chunkPath)) {
                     Files.createDirectories(backupDir);
                     Files.copy(chunkPath, backupChunk, java.nio.file.StandardCopyOption.REPLACE_EXISTING);
@@ -245,7 +354,6 @@ public class FileSharingController {
             } catch (NumberFormatException ignored) {}
         }
 
-        // Clean up previously reconstructed output file so recovery can be proven fresh
         SharedFile shared = chunkManagerService.getAllSharedFiles().stream()
                 .filter(f -> f.getFileId().equals(fileId))
                 .findFirst().orElse(null);
@@ -254,14 +362,13 @@ public class FileSharingController {
             Files.deleteIfExists(reconstructed);
         }
 
-        // Reset the active download job so user can download again fresh
         downloadManagerService.resetJob(fileId);
 
         return Map.of(
-            "status", "CHUNKS_CORRUPTED",
-            "fileId", fileId,
-            "droppedChunks", dropped,
-            "message", "Dropped chunks " + dropped + " from node storage. Active download job reset."
+                "status", "CHUNKS_CORRUPTED",
+                "fileId", fileId,
+                "droppedChunks", dropped,
+                "message", "Dropped chunks " + dropped + " from node storage. Active download job reset."
         );
     }
 
@@ -271,7 +378,7 @@ public class FileSharingController {
         Path simulatedDir = Paths.get("peer-data", "simulated-missing", fileId).toAbsolutePath();
         Path backupDir = Paths.get("peer-data", "chunks-backup", fileId).toAbsolutePath();
         Path chunksDir = Paths.get("peer-data", "chunks", fileId).toAbsolutePath();
-        List<String> restored = new java.util.ArrayList<>();
+        List<String> restored = new ArrayList<>();
 
         if (Files.exists(simulatedDir)) {
             try (var stream = Files.list(simulatedDir)) {
@@ -290,10 +397,10 @@ public class FileSharingController {
         }
 
         return Map.of(
-            "status", "CHUNKS_RESTORED",
-            "fileId", fileId,
-            "restoredChunks", restored,
-            "message", "All chunks restored back into peer node storage."
+                "status", "CHUNKS_RESTORED",
+                "fileId", fileId,
+                "restoredChunks", restored,
+                "message", "All chunks restored back into peer node storage."
         );
     }
 

@@ -89,6 +89,7 @@
     sharedFilesEmptyState: document.getElementById('sharedFilesEmptyState'),
 
     // Peer Mesh
+    scanNetworkBtn: document.getElementById('scanNetworkBtn'),
     toggleRegisterPeerBtn: document.getElementById('toggleRegisterPeerBtn'),
     registerPeerDrawer: document.getElementById('registerPeerDrawer'),
     closeRegisterDrawerBtn: document.getElementById('closeRegisterDrawerBtn'),
@@ -403,6 +404,39 @@
     }
   }
 
+  async function fetchTelemetry() {
+    try {
+      const resp = await fetch(`${CONFIG.apiBase}/api/cache/stats`, { cache: 'no-store' });
+      if (!resp.ok) return;
+      const stats = await resp.json();
+      renderTelemetry(stats);
+    } catch (err) {
+      // Telemetry best-effort
+    }
+  }
+
+  function renderTelemetry(stats) {
+    if (!stats) return;
+    const hits = stats.queryCacheHits || 0;
+    const misses = stats.queryCacheMisses || 0;
+    const hitRate = stats.hitRate !== undefined ? (stats.hitRate * 100).toFixed(1) : '0.0';
+    const avgRtt = stats.averageRttMs !== undefined && stats.averageRttMs > 0 ? stats.averageRttMs.toFixed(1) : '--';
+    const swarmCount = stats.activeSwarmCount || 0;
+    const cachedQueries = stats.cachedQueryCount || 0;
+
+    const hitsEl = document.getElementById('telemetryHitsMisses');
+    const hitRateEl = document.getElementById('telemetryHitRate');
+    const avgRttEl = document.getElementById('telemetryAvgRtt');
+    const swarmCountEl = document.getElementById('telemetrySwarmCount');
+    const cachedQueriesEl = document.getElementById('telemetryCachedQueries');
+
+    if (hitsEl) hitsEl.textContent = `${hits} / ${misses}`;
+    if (hitRateEl) hitRateEl.textContent = `${hitRate}% Hit`;
+    if (avgRttEl) avgRttEl.textContent = `${avgRtt} ms`;
+    if (swarmCountEl) swarmCountEl.textContent = `${swarmCount} swarms`;
+    if (cachedQueriesEl) cachedQueriesEl.textContent = `${cachedQueries} cached`;
+  }
+
   function updateMetrics() {
     // 1. Shared Files count
     DOM.statSharedCount.textContent = STATE.sharedFiles.length;
@@ -691,9 +725,18 @@
 
         const progressMeta = card.querySelector('.job-progress-meta');
         if (progressMeta) {
+          const speedMb = job.speedBytesPerSec ? (job.speedBytesPerSec / (1024 * 1024)).toFixed(2) : '0.00';
+          const lanesCount = job.activeLanes || (job.status === 'DOWNLOADING' ? 4 : 0);
+          const bytesText = `${formatBytes(job.bytesDownloaded || 0)} / ${formatBytes(job.totalBytes || job.totalSize || (totalChunks * 1024 * 1024))}`;
+
           progressMeta.innerHTML = `
-            <span class="mono">${job.completedChunks || 0} / ${totalChunks} chunks assembled</span>
-            <span class="mono">${progressFormatted}%</span>
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span class="mono">${bytesText}</span>
+              ${job.status === 'DOWNLOADING' ? `<span class="transfer-speed-chip mono">${speedMb} MB/s</span>` : ''}
+              ${job.status === 'DOWNLOADING' ? `<span class="streaming-lanes-badge"><span class="pulse-dot"></span>${lanesCount} Parallel Lanes</span>` : ''}
+              ${job.status === 'COMPLETED' ? `<span class="badge badge-success mono" style="font-size:0.68rem;">ZERO-CHUNKING STREAMED</span>` : ''}
+            </div>
+            <span class="mono" style="font-weight:600;">${progressFormatted}%</span>
           `;
         }
 
@@ -812,8 +855,13 @@
               <div class="progress-fill ${job.status === 'COMPLETED' ? 'fill-completed' : job.status === 'FAILED' ? 'fill-failed' : ''}" style="width: ${progressFormatted}%"></div>
             </div>
             <div class="job-progress-meta">
-              <span class="mono">${job.completedChunks || 0} / ${totalChunks} chunks assembled</span>
-              <span class="mono">${progressFormatted}%</span>
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+                <span class="mono">${formatBytes(job.bytesDownloaded || 0)} / ${formatBytes(job.totalBytes || job.totalSize || (totalChunks * 1024 * 1024))}</span>
+                ${job.status === 'DOWNLOADING' ? `<span class="transfer-speed-chip mono">${((job.speedBytesPerSec || 0) / (1024 * 1024)).toFixed(2)} MB/s</span>` : ''}
+                ${job.status === 'DOWNLOADING' ? `<span class="streaming-lanes-badge"><span class="pulse-dot"></span>${job.activeLanes || (job.status === 'DOWNLOADING' ? 4 : 0)} Parallel Lanes</span>` : ''}
+                ${job.status === 'COMPLETED' ? `<span class="badge badge-success mono" style="font-size:0.68rem;">ZERO-CHUNKING STREAMED</span>` : ''}
+              </div>
+              <span class="mono" style="font-weight:600;">${progressFormatted}%</span>
             </div>
           </div>
 
@@ -855,12 +903,22 @@
       card.className = 'peer-row-card';
 
       const peerAddress = `${peer.host}:${peer.port}`;
+      const latencyChip = peer.rttMs !== undefined && peer.rttMs >= 0
+        ? `<span class="latency-chip mono" title="Live measured round-trip time">${peer.rttMs}ms RTT</span>`
+        : '';
+      const shareChip = peer.shareReady
+        ? `<span class="badge badge-success mono" style="font-size:0.65rem;padding:1px 5px;" title="Stream Ready">STREAM</span>`
+        : '';
 
       card.innerHTML = `
         <div class="peer-info-cluster">
           <span class="peer-status-dot" title="Peer Registered"></span>
           <div class="peer-name-block">
-            <span class="peer-name-text mono">${sanitizeHtml(peer.peerId)}</span>
+            <div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;">
+              <span class="peer-name-text mono">${sanitizeHtml(peer.peerId)}</span>
+              ${latencyChip}
+              ${shareChip}
+            </div>
             <span class="peer-address-text mono">${sanitizeHtml(peerAddress)}</span>
           </div>
         </div>
@@ -1054,6 +1112,8 @@
                   data-fileid="${sanitizeHtml(res.fileId)}"
                   data-filename="${sanitizeHtml(res.fileName)}"
                   data-totalchunks="${totalChunks}"
+                  data-filesize="${res.sizeBytes || 0}"
+                  data-filehash="${sanitizeHtml(res.fileHash || '')}"
                   data-host="${sanitizeHtml(res.sourceHost)}"
                   data-port="${res.sourcePort}"
                   type="button">
@@ -1100,7 +1160,7 @@
   // ---------------------------------------------------------------------------
   // Action: Trigger Download Job
   // ---------------------------------------------------------------------------
-  async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort, forceNetwork = false) {
+  async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort, forceNetwork = false, fileSize = 0, fileHash = '') {
     try {
       totalChunks = parseInt(totalChunks, 10) || 1;
 
@@ -1156,7 +1216,9 @@
       // Start fast polling immediately to animate chunks
       startFastPolling();
 
-      const url = `${CONFIG.apiBase}/api/download/start?fileId=${encodeURIComponent(fileId)}&fileName=${encodeURIComponent(fileName)}&totalChunks=${totalChunks}&sourceHost=${encodeURIComponent(sourceHost || '127.0.0.1')}&sourcePort=${sourcePort || 9001}`;
+      let url = `${CONFIG.apiBase}/api/download/start?fileId=${encodeURIComponent(fileId)}&fileName=${encodeURIComponent(fileName)}&totalChunks=${totalChunks}&sourceHost=${encodeURIComponent(sourceHost || '127.0.0.1')}&sourcePort=${sourcePort || 9001}`;
+      if (fileSize > 0) url += `&fileSize=${fileSize}`;
+      if (fileHash) url += `&fileHash=${encodeURIComponent(fileHash)}`;
       const resp = await fetch(url, { method: 'POST' });
       const job = await resp.json();
 
@@ -1321,7 +1383,8 @@
         checkNodeHealth(),
         fetchSharedFiles(),
         fetchKnownPeers(),
-        fetchDownloadJobs()
+        fetchDownloadJobs(),
+        fetchTelemetry()
       ]);
     } finally {
       setTimeout(() => {
@@ -1450,7 +1513,9 @@
         const totalChunks = parseInt(btn.getAttribute('data-totalchunks'), 10) || 1;
         const host = btn.getAttribute('data-host');
         const port = parseInt(btn.getAttribute('data-port'), 10);
-        startDownloadJob(fileId, fileName, totalChunks, host, port);
+        const fileSize = parseInt(btn.getAttribute('data-filesize'), 10) || 0;
+        const fileHash = btn.getAttribute('data-filehash') || '';
+        startDownloadJob(fileId, fileName, totalChunks, host, port, false, fileSize, fileHash);
       }
     });
 
@@ -1565,6 +1630,50 @@
     DOM.sharedFilesFilterInput.addEventListener('input', () => {
       renderSharedFilesTable();
     });
+
+    // Zero-Config Discovery: Scan Subnet & Ports
+    if (DOM.scanNetworkBtn) {
+      DOM.scanNetworkBtn.addEventListener('click', async () => {
+        try {
+          DOM.scanNetworkBtn.disabled = true;
+          const origHtml = DOM.scanNetworkBtn.innerHTML;
+          DOM.scanNetworkBtn.innerHTML = `
+            <svg class="icon spin-fast" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
+            </svg>
+            <span>Scanning...</span>
+          `;
+          appendTerminalLog('TRIGGER: Zero-Config Subnet & Port Probe (9000-9005)...');
+          showToast('info', 'Network Scan Initiated', 'Probing active IPv4 subnets and ports 9000-9005 for sharing-ready peers...');
+
+          const resp = await fetch(`${CONFIG.apiBase}/api/peers/discover`, { method: 'POST' });
+          const data = await resp.json();
+
+          if (resp.ok) {
+            showToast('success', 'Discovery Completed', `Discovered ${data.count || 0} active peer(s) with live RTT measurement.`);
+            appendTerminalLog('DISCOVERY REPORT:', data);
+            await fetchKnownPeers();
+            await fetchTelemetry();
+          } else {
+            showToast('error', 'Scan Failed', data.message || 'Unable to scan network.');
+          }
+        } catch (err) {
+          showToast('error', 'Discovery Error', err.message || 'Network scan failed.');
+        } finally {
+          DOM.scanNetworkBtn.disabled = false;
+          DOM.scanNetworkBtn.innerHTML = `
+            <svg class="icon icon-scan" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <line x1="2" x2="6" y1="12" y2="12"/>
+              <line x1="18" x2="22" y1="12" y2="12"/>
+              <line x1="12" x2="12" y1="2" y2="6"/>
+              <line x1="12" x2="12" y1="18" y2="22"/>
+            </svg>
+            <span>Scan Network</span>
+          `;
+        }
+      });
+    }
 
     // Peer Mesh Drawer Toggle & Submit
     DOM.toggleRegisterPeerBtn.addEventListener('click', () => {

@@ -1,6 +1,7 @@
 package com.example.demo;
 
 import com.example.demo.service.ChunkManagerService;
+import com.example.demo.service.ErasureCodingRecoveryEngine;
 import com.example.demo.service.SearchManagerService;
 import modell.*;
 import org.junit.jupiter.api.AfterEach;
@@ -18,6 +19,8 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
+import java.nio.file.StandardOpenOption;
+import java.util.Arrays;
 import java.util.List;
 import java.util.Set;
 
@@ -31,6 +34,9 @@ public class CacheAndStorageTest {
 
     @Autowired
     private SearchManagerService searchManagerService;
+
+    @Autowired
+    private ErasureCodingRecoveryEngine erasureCodingRecoveryEngine;
 
     private File tempFile;
 
@@ -56,6 +62,8 @@ public class CacheAndStorageTest {
         assertNotNull(hash);
         assertEquals(64, hash.length()); // SHA-256 hex is 64 characters
 
+        long savedBefore = chunkManagerService.getSqliteQueriesSaved();
+
         // 2. Register shared file using zero-chunking architecture
         SharedFile shared = chunkManagerService.registerSharedFile(tempFile, "peer-test-1");
         assertNotNull(shared);
@@ -66,7 +74,7 @@ public class CacheAndStorageTest {
         Path chunkDir = Paths.get("peer-data", "chunks", shared.getFileId());
         assertFalse(Files.exists(chunkDir), "Zero-chunking architecture must NOT create .chunk files on disk");
 
-        // 3. Test getFileChannel retrieval
+        // 3. Test getFileChannel retrieval (served from O(1) in-memory catalog)
         try (FileChannel channel = chunkManagerService.getFileChannel(shared.getFileId())) {
             assertNotNull(channel);
             assertEquals(tempFile.length(), channel.size());
@@ -76,17 +84,20 @@ public class CacheAndStorageTest {
             assertEquals("Hello Zero-Chunking P2P Distributed Storage!", content);
         }
 
-        // 4. Test getFileChannel by fileHash fallback
+        // 4. Test getFileChannel by fileHash fallback (served from O(1) in-memory catalog)
         try (FileChannel channelByHash = chunkManagerService.getFileChannel(hash)) {
             assertNotNull(channelByHash);
             assertEquals(tempFile.length(), channelByHash.size());
         }
 
-        // 5. Test getFileChannel by fileName fallback
+        // 5. Test getFileChannel by fileName fallback (served from O(1) in-memory catalog)
         try (FileChannel channelByName = chunkManagerService.getFileChannel(tempFile.getName())) {
             assertNotNull(channelByName);
             assertEquals(tempFile.length(), channelByName.size());
         }
+
+        assertTrue(chunkManagerService.getSqliteQueriesSaved() >= savedBefore + 3,
+                "In-memory catalog must bypass SQLite queries on hot path");
     }
 
     @Test
@@ -134,7 +145,7 @@ public class CacheAndStorageTest {
             SharedFile sf24 = chunkManagerService.registerSharedFile(ub24File, "peer-1");
             SharedFile sf22 = chunkManagerService.registerSharedFile(ub22File, "peer-1");
 
-            // Initial search for "ubuntu" creates cache entry
+            // Initial search for "ubuntu" creates cache entry using in-memory trigram index (0 SQLite queries)
             List<SearchResult> results = searchManagerService.executeDistributedSearch("ubuntu", 0);
             assertNotNull(results);
             assertTrue(results.size() >= 2);
@@ -156,15 +167,68 @@ public class CacheAndStorageTest {
             assertFalse(prefixHit.isEmpty());
             assertTrue(prefixHit.stream().allMatch(sr -> sr.getFileName().toLowerCase().contains("24")));
 
-            // 3. Verify CacheStats
+            // 3. Verify CacheStats including in-memory index & SQLite bypass metrics
             CacheStats stats = searchManagerService.getCacheStats();
             assertNotNull(stats);
             assertTrue(stats.getQueryCacheHits() >= 2);
             assertTrue(stats.getHitRate() > 0.0);
             assertTrue(stats.getCachedQueryCount() >= 1);
+            assertTrue(stats.getInMemoryIndexedFiles() >= 2);
+            assertTrue(stats.getInvertedIndexTokens() > 0);
+            assertTrue(stats.getSqliteQueriesSaved() > 0);
         } finally {
             if (ub24File.exists()) ub24File.delete();
             if (ub22File.exists()) ub22File.delete();
+        }
+    }
+
+    @Test
+    public void testReedSolomonGf256ErasureCodingAndSubBlockMerkleVerification() throws Exception {
+        // 1. Verify GF(2^8) Reed-Solomon multi-erasure recovery (4 data blocks + 2 parity blocks)
+        int k = 4;
+        int m = 2;
+        int blockSize = 32768;
+        byte[][] original = new byte[k][blockSize];
+        byte[][] damaged = new byte[k][blockSize];
+        for (int i = 0; i < k; i++) {
+            for (int j = 0; j < blockSize; j++) {
+                byte v = (byte) ((i * 73 + j * 19 + 5) & 0xFF);
+                original[i][j] = v;
+                damaged[i][j] = v;
+            }
+        }
+
+        byte[][] parity = erasureCodingRecoveryEngine.encodeReedSolomonParity(original, m);
+        // Erase two data blocks simultaneously (blocks 0 and 2)
+        damaged[0] = null;
+        damaged[2] = null;
+
+        erasureCodingRecoveryEngine.reconstructReedSolomonErasures(damaged, parity, blockSize);
+        assertArrayEquals(original[0], damaged[0], "Shard 0 must be mathematically reconstructed via GF(2^8) Reed-Solomon");
+        assertArrayEquals(original[2], damaged[2], "Shard 2 must be mathematically reconstructed via GF(2^8) Reed-Solomon");
+
+        // 2. Verify 64 KB Sub-Block CRC32C Merkle corruption pinpoint detection
+        Path tmp = Files.createTempFile("merkle-crc-", ".bin");
+        byte[] fileData = new byte[ErasureCodingRecoveryEngine.SUB_BLOCK_SIZE * 3]; // 192 KB (3 sub-blocks)
+        for (int i = 0; i < fileData.length; i++) {
+            fileData[i] = (byte) (i & 0xFF);
+        }
+        Files.write(tmp, fileData);
+
+        try (FileChannel fc = FileChannel.open(tmp, StandardOpenOption.READ, StandardOpenOption.WRITE)) {
+            ErasureCodingRecoveryEngine.WindowIntegrityMetadata meta =
+                    erasureCodingRecoveryEngine.computeWindowMetadata(fc, 0, fileData.length);
+            assertEquals(3, meta.getSubBlockCrcs().size());
+
+            // Corrupt 1 byte inside sub-block #1 (at offset 70,000)
+            ByteBuffer corruptByte = ByteBuffer.wrap(new byte[]{(byte) 0xFF});
+            fc.write(corruptByte, 70000);
+
+            List<Integer> corruptedSubBlocks = erasureCodingRecoveryEngine.findCorruptedSubBlocks(
+                    fc, 0, fileData.length, meta.getSubBlockCrcs());
+            assertEquals(List.of(1), corruptedSubBlocks, "Sub-block Merkle CRC32C must pinpoint exact corrupted sub-block #1");
+        } finally {
+            Files.deleteIfExists(tmp);
         }
     }
 }

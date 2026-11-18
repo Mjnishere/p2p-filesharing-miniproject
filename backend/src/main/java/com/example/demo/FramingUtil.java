@@ -10,10 +10,15 @@ import java.nio.ByteBuffer;
 import java.nio.channels.FileChannel;
 import java.nio.charset.StandardCharsets;
 import java.util.function.LongConsumer;
+import java.util.zip.CRC32C;
 
 public class FramingUtil {
 
-    private static final int BUFFER_SIZE = 65536; // 64 KB buffer
+    public static final int BUFFER_SIZE = 65536; // 64 KB buffer
+
+    // Thread-local zero-allocation buffer pools to eliminate per-window GC pressure
+    private static final ThreadLocal<byte[]> HEAP_BUFFER_POOL =
+            ThreadLocal.withInitial(() -> new byte[BUFFER_SIZE]);
 
     // Send: 4-byte length prefix followed by raw UTF-8 payload bytes
     public static void writeFrame(DataOutputStream dos, String message) throws IOException {
@@ -26,32 +31,39 @@ public class FramingUtil {
     // Read: 4-byte length prefix followed by reading exactly that many bytes
     public static String readFrame(DataInputStream dis) throws IOException {
         int length = dis.readInt();
+        if (length < 0 || length > 32 * 1024 * 1024) {
+            throw new IOException("Invalid frame length: " + length);
+        }
         byte[] buffer = new byte[length];
         dis.readFully(buffer);
         return new String(buffer, StandardCharsets.UTF_8);
     }
 
     /**
-     * Strictly reads exactly `length` raw binary bytes from `in` and writes them directly
-     * to `channel` at positional offset (fileOffset + totalBytesReadSoFar) without moving the
-     * channel's cursor (OS positional pwrite).
-     *
-     * @param in Input stream from socket
-     * @param channel Destination FileChannel
-     * @param fileOffset Starting file offset
-     * @param length Number of raw bytes to read
-     * @param onProgress Callback receiving count of bytes read per chunk
-     * @throws IOException If I/O error or premature stream termination occurs
+     * Strictly reads exactly `length` raw binary bytes from `in` using a pooled 64 KB buffer
+     * and writes them directly to `channel` at positional offset (fileOffset + totalBytesReadSoFar)
+     * without moving the channel's cursor (OS positional pwrite).
      */
     public static void pipeRawBytes(InputStream in, FileChannel channel, long fileOffset, long length, LongConsumer onProgress) throws IOException {
+        pipeRawBytesWithCrc(in, channel, fileOffset, length, onProgress);
+    }
+
+    /**
+     * Strictly reads `length` raw binary bytes from `in`, writes them positionally via `pwrite` into `channel`,
+     * and computes the hardware-accelerated CRC32C checksum in a single zero-copy pass.
+     *
+     * @return Computed CRC32C value for the transferred byte range
+     */
+    public static long pipeRawBytesWithCrc(InputStream in, FileChannel channel, long fileOffset, long length, LongConsumer onProgress) throws IOException {
         if (length < 0) {
             throw new IllegalArgumentException("Length cannot be negative: " + length);
         }
         if (length == 0) {
-            return;
+            return 0L;
         }
 
-        byte[] buffer = new byte[BUFFER_SIZE];
+        byte[] buffer = HEAP_BUFFER_POOL.get();
+        CRC32C crc32c = new CRC32C();
         long remaining = length;
         long totalBytesReadSoFar = 0;
 
@@ -62,6 +74,8 @@ public class FramingUtil {
                 throw new EOFException("Premature end of stream while reading raw bytes. Expected "
                         + remaining + " more bytes (read " + totalBytesReadSoFar + "/" + length + ")");
             }
+
+            crc32c.update(buffer, 0, bytesRead);
 
             ByteBuffer byteBuffer = ByteBuffer.wrap(buffer, 0, bytesRead);
             long writePos = fileOffset + totalBytesReadSoFar;
@@ -77,18 +91,13 @@ public class FramingUtil {
                 onProgress.accept(bytesRead);
             }
         }
+
+        return crc32c.getValue();
     }
 
     /**
-     * Reads exactly `length` bytes from `channel` at `fileOffset` using a 64KB buffer
+     * Reads `length` bytes from `channel` at `fileOffset` using a pooled 64 KB buffer
      * and streams them directly into `out`, flushing at completion.
-     *
-     * @param channel Source FileChannel
-     * @param out Destination OutputStream (socket)
-     * @param fileOffset Starting offset in source file
-     * @param length Number of bytes to transfer
-     * @param onProgress Optional progress callback
-     * @throws IOException If channel terminates early or socket error occurs
      */
     public static void pipeChannelToStream(FileChannel channel, OutputStream out, long fileOffset, long length, LongConsumer onProgress) throws IOException {
         if (length < 0) {
@@ -99,7 +108,7 @@ public class FramingUtil {
             return;
         }
 
-        byte[] buffer = new byte[BUFFER_SIZE];
+        byte[] buffer = HEAP_BUFFER_POOL.get();
         ByteBuffer byteBuffer = ByteBuffer.wrap(buffer);
         long remaining = length;
         long currentOffset = fileOffset;

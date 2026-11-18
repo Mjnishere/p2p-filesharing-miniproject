@@ -1,5 +1,8 @@
 package modell;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class SearchResult {
     private String fileId;
     private String fileName;
@@ -9,6 +12,8 @@ public class SearchResult {
     private int sourcePort;
     private String fileHash;
     private long rttMs;
+    private List<PeerEndpoint> swarmPeers = new ArrayList<>();
+    private int swarmSize = 1;
 
     public SearchResult() {}
 
@@ -55,4 +60,13 @@ public class SearchResult {
 
     public long getRttMs() { return rttMs; }
     public void setRttMs(long rttMs) { this.rttMs = rttMs; }
+
+    public List<PeerEndpoint> getSwarmPeers() { return swarmPeers; }
+    public void setSwarmPeers(List<PeerEndpoint> swarmPeers) {
+        this.swarmPeers = swarmPeers != null ? swarmPeers : new ArrayList<>();
+        this.swarmSize = Math.max(1, this.swarmPeers.size());
+    }
+
+    public int getSwarmSize() { return Math.max(1, swarmPeers != null && !swarmPeers.isEmpty() ? swarmPeers.size() : swarmSize); }
+    public void setSwarmSize(int swarmSize) { this.swarmSize = swarmSize; }
 }

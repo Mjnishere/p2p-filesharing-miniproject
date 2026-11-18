@@ -1,11 +1,16 @@
 package modell;
 
+import java.util.ArrayList;
+import java.util.List;
+
 public class StreamResponse {
     private String type = "STREAM_RES";
     private String status; // OK or ERROR
     private String fileId;
     private long offset;
     private long length;
+    private long crc32c; // Hardware-accelerated CRC32C checksum for window verification
+    private List<Long> subBlockCrcs = new ArrayList<>(); // 64 KB sub-block CRC32C Merkle digests
     private String errorMessage;
 
     public StreamResponse() {}
@@ -20,6 +25,15 @@ public class StreamResponse {
 
     public static StreamResponse ok(String fileId, long offset, long length) {
         return new StreamResponse("OK", fileId, offset, length);
+    }
+
+    public static StreamResponse ok(String fileId, long offset, long length, long crc32c, List<Long> subBlockCrcs) {
+        StreamResponse res = new StreamResponse("OK", fileId, offset, length);
+        res.setCrc32c(crc32c);
+        if (subBlockCrcs != null) {
+            res.setSubBlockCrcs(subBlockCrcs);
+        }
+        return res;
     }
 
     public static StreamResponse error(String fileId, String errorMessage) {
@@ -44,6 +58,12 @@ public class StreamResponse {
 
     public long getLength() { return length; }
     public void setLength(long length) { this.length = length; }
+
+    public long getCrc32c() { return crc32c; }
+    public void setCrc32c(long crc32c) { this.crc32c = crc32c; }
+
+    public List<Long> getSubBlockCrcs() { return subBlockCrcs; }
+    public void setSubBlockCrcs(List<Long> subBlockCrcs) { this.subBlockCrcs = subBlockCrcs; }
 
     public String getErrorMessage() { return errorMessage; }
     public void setErrorMessage(String errorMessage) { this.errorMessage = errorMessage; }

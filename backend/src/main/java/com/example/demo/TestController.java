@@ -2,6 +2,7 @@ package com.example.demo;
 
 import com.example.demo.service.ChunkManagerService;
 import com.example.demo.service.DownloadManagerService;
+import com.example.demo.service.ErasureCodingRecoveryEngine;
 import com.example.demo.service.SearchManagerService;
 import modell.NetworkMessage;
 import modell.SearchResult;
@@ -17,6 +18,7 @@ import java.io.File;
 import java.io.FileNotFoundException;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.nio.file.Paths;
@@ -41,6 +43,9 @@ public class TestController {
 
     @Autowired
     private DownloadManagerService downloadManagerService;
+
+    @Autowired
+    private ErasureCodingRecoveryEngine erasureCodingRecoveryEngine;
 
     @Value("${peer.tcp.port:9001}")
     private int tcpPort;
@@ -95,6 +100,52 @@ public class TestController {
                 "resultsFound", results.size(),
                 "results", results
         );
+    }
+
+    @GetMapping("/api/test/erasure-recovery")
+    public Map<String, Object> testErasureCodingRecovery() {
+        Map<String, Object> report = new LinkedHashMap<>();
+        int k = 4; // 4 data shards
+        int m = 2; // 2 Reed-Solomon parity shards
+        int blockSize = 65536; // 64 KB each
+
+        byte[][] originalData = new byte[k][blockSize];
+        byte[][] workingData = new byte[k][blockSize];
+        for (int d = 0; d < k; d++) {
+            for (int b = 0; b < blockSize; b++) {
+                byte val = (byte) ((d * 53 + b * 17 + 11) & 0xFF);
+                originalData[d][b] = val;
+                workingData[d][b] = val;
+            }
+        }
+
+        long encodeStartNs = System.nanoTime();
+        byte[][] parityShards = erasureCodingRecoveryEngine.encodeReedSolomonParity(originalData, m);
+        double encodeMs = (System.nanoTime() - encodeStartNs) / 1_000_000.0;
+
+        // Simulate simultaneous catastrophic loss of Data Shard #1 and Data Shard #3 (50% data loss!)
+        workingData[1] = null;
+        workingData[3] = null;
+
+        long decodeStartNs = System.nanoTime();
+        erasureCodingRecoveryEngine.reconstructReedSolomonErasures(workingData, parityShards, blockSize);
+        double decodeMs = (System.nanoTime() - decodeStartNs) / 1_000_000.0;
+
+        boolean shard1Restored = Arrays.equals(originalData[1], workingData[1]);
+        boolean shard3Restored = Arrays.equals(originalData[3], workingData[3]);
+
+        report.put("algorithm", "Galois Field GF(2^8) Reed-Solomon Vandermonde Matrix Erasure Coding (4+2)");
+        report.put("dataShards", k);
+        report.put("parityShards", m);
+        report.put("shardSizeBytes", blockSize);
+        report.put("simulatedSimultaneousErasures", List.of(1, 3));
+        report.put("encodeLatencyMs", encodeMs);
+        report.put("decodeRecoveryLatencyMs", decodeMs);
+        report.put("shard1ByteExactMatch", shard1Restored);
+        report.put("shard3ByteExactMatch", shard3Restored);
+        report.put("sqliteQueriesSavedByInMemoryIndex", chunkManagerService.getSqliteQueriesSaved());
+        report.put("status", (shard1Restored && shard3Restored) ? "GF256_REED_SOLOMON_RECOVERY_VERIFIED" : "FAILED");
+        return report;
     }
 
     @GetMapping("/api/test/chunk-recovery")

@@ -102,6 +102,7 @@
 
     // Diagnostics & Console
     btnTestRecovery: document.getElementById('btnTestRecovery'),
+    btnTestErasure: document.getElementById('btnTestErasure'),
     btnTestTcpHello: document.getElementById('btnTestTcpHello'),
     btnTestChunking: document.getElementById('btnTestChunking'),
     btnCorruptPneuma: document.getElementById('btnCorruptPneuma'),
@@ -302,7 +303,6 @@
         setOnlineStatus(true, data);
         return;
       }
-      // Fallback probe
       const fallbackResp = await fetch(`${CONFIG.apiBase}/api/files`, { cache: 'no-store' });
       if (fallbackResp.ok) {
         setOnlineStatus(true, { peerId: CONFIG.defaultOwner, tcpPort: 9001 });
@@ -384,7 +384,7 @@
         // Auto-download to device once a queued transfer completes
         if (job.status === 'COMPLETED' && STATE.pendingDeviceDownloads.has(job.fileId)) {
           STATE.pendingDeviceDownloads.delete(job.fileId);
-          showToast('success', 'Transfer Complete!', `"${job.fileName}" has been reassembled and is downloading to your device.`);
+          showToast('success', 'Transfer Complete!', `"${job.fileName}" has been streamed and verified and is downloading to your device.`);
           triggerBrowserDownload(job.fileId, job.fileName);
         }
       });
@@ -423,36 +423,36 @@
     const avgRtt = stats.averageRttMs !== undefined && stats.averageRttMs > 0 ? stats.averageRttMs.toFixed(1) : '--';
     const swarmCount = stats.activeSwarmCount || 0;
     const cachedQueries = stats.cachedQueryCount || 0;
+    const sqlSaved = stats.sqliteQueriesSaved || 0;
+    const indexedFiles = stats.inMemoryIndexedFiles || 0;
 
     const hitsEl = document.getElementById('telemetryHitsMisses');
     const hitRateEl = document.getElementById('telemetryHitRate');
     const avgRttEl = document.getElementById('telemetryAvgRtt');
     const swarmCountEl = document.getElementById('telemetrySwarmCount');
     const cachedQueriesEl = document.getElementById('telemetryCachedQueries');
+    const sqlSavedEl = document.getElementById('telemetrySqliteSaved');
+    const indexedFilesEl = document.getElementById('telemetryIndexedFiles');
 
     if (hitsEl) hitsEl.textContent = `${hits} / ${misses}`;
     if (hitRateEl) hitRateEl.textContent = `${hitRate}% Hit`;
     if (avgRttEl) avgRttEl.textContent = `${avgRtt} ms`;
     if (swarmCountEl) swarmCountEl.textContent = `${swarmCount} swarms`;
     if (cachedQueriesEl) cachedQueriesEl.textContent = `${cachedQueries} cached`;
+    if (sqlSavedEl) sqlSavedEl.textContent = `${sqlSaved} SQLite bypassed`;
+    if (indexedFilesEl) indexedFilesEl.textContent = `${indexedFiles} RAM indexed`;
   }
 
   function updateMetrics() {
-    // 1. Shared Files count
     DOM.statSharedCount.textContent = STATE.sharedFiles.length;
-
-    // 2. Storage used
     const totalBytes = STATE.sharedFiles.reduce((acc, f) => acc + (f.sizeBytes || 0), 0);
     DOM.statStorageUsed.textContent = formatBytes(totalBytes);
 
-    // 3. Active transfers
     let activeCount = 0;
     STATE.downloadJobs.forEach(job => {
       if (job.status === 'DOWNLOADING' || job.status === 'PENDING') activeCount++;
     });
     DOM.statActiveDownloads.textContent = activeCount;
-
-    // 4. Mesh Peers
     DOM.statPeersCount.textContent = STATE.knownPeers.length;
   }
 
@@ -506,7 +506,7 @@
         </td>
         <td class="mono">${formatBytes(file.sizeBytes || 0)}</td>
         <td>
-          <span class="badge badge-subtle mono">${totalChunks} ${totalChunks === 1 ? 'chunk' : 'chunks'}</span>
+          <span class="badge badge-subtle mono">${totalChunks} ${totalChunks === 1 ? 'window' : 'windows'}</span>
         </td>
         <td>
           <span class="cell-path mono" title="${sanitizeHtml(file.originalPath || '')}">${sanitizeHtml(file.originalPath || '-')}</span>
@@ -642,10 +642,8 @@
     DOM.transfersEmptyState.hidden = true;
     DOM.transfersEmptyState.style.setProperty('display', 'none', 'important');
 
-    // Sort jobs: DOWNLOADING/PENDING first, then COMPLETED/FAILED
     jobs.sort((a, b) => (b.startTime || 0) - (a.startTime || 0));
 
-    // Remove cards for jobs that no longer exist
     const activeFileIds = new Set(jobs.map(j => j.fileId));
     Array.from(DOM.transfersCardList.children).forEach(child => {
       const cardFileId = child.getAttribute('data-job-fileid');
@@ -700,23 +698,19 @@
       let card = DOM.transfersCardList.querySelector(`[data-job-fileid="${job.fileId}"]`);
 
       if (card) {
-        // --- IN-PLACE UPDATE (PRESERVES SCROLL POSITION COMPLETELY!) ---
         card.className = `transfer-job-item status-${statusLower}`;
 
-        // Update badge
         const badgeEl = card.querySelector('.job-status-badge');
         if (badgeEl) {
           badgeEl.className = `badge ${badgeClass} mono job-status-badge`;
           badgeEl.innerHTML = `${statusIcon} ${job.status}`;
         }
 
-        // Update duration
         const durationEl = card.querySelector('.job-elapsed-time');
         if (durationEl) {
           durationEl.textContent = `Duration: ${elapsed}`;
         }
 
-        // Update progress bar
         const progressFill = card.querySelector('.progress-fill');
         if (progressFill) {
           progressFill.className = `progress-fill ${job.status === 'COMPLETED' ? 'fill-completed' : job.status === 'FAILED' ? 'fill-failed' : ''}`;
@@ -727,20 +721,20 @@
         if (progressMeta) {
           const speedMb = job.speedBytesPerSec ? (job.speedBytesPerSec / (1024 * 1024)).toFixed(2) : '0.00';
           const lanesCount = job.activeLanes || (job.status === 'DOWNLOADING' ? 4 : 0);
+          const swarmPeersCount = job.swarmPeersCount || 1;
           const bytesText = `${formatBytes(job.bytesDownloaded || 0)} / ${formatBytes(job.totalBytes || job.totalSize || (totalChunks * 1024 * 1024))}`;
 
           progressMeta.innerHTML = `
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span class="mono">${bytesText}</span>
               ${job.status === 'DOWNLOADING' ? `<span class="transfer-speed-chip mono">${speedMb} MB/s</span>` : ''}
-              ${job.status === 'DOWNLOADING' ? `<span class="streaming-lanes-badge"><span class="pulse-dot"></span>${lanesCount} Parallel Lanes</span>` : ''}
-              ${job.status === 'COMPLETED' ? `<span class="badge badge-success mono" style="font-size:0.68rem;">ZERO-CHUNKING STREAMED</span>` : ''}
+              ${job.status === 'DOWNLOADING' ? `<span class="streaming-lanes-badge"><span class="pulse-dot"></span>${lanesCount} Lanes (${swarmPeersCount} Swarm Peers)</span>` : ''}
+              ${job.status === 'COMPLETED' ? `<span class="badge badge-success mono" style="font-size:0.68rem;">ZERO-CHUNKING STREAMED (${swarmPeersCount} PEER SWARM)</span>` : ''}
             </div>
             <span class="mono" style="font-weight:600;">${progressFormatted}%</span>
           `;
         }
 
-        // Update individual chunk cells in grid without touching scroll
         const grid = card.querySelector('.chunk-ribbon-grid');
         if (grid) {
           if (grid.children.length === totalChunks) {
@@ -751,7 +745,7 @@
               if (cell.className !== expectedClass) {
                 cell.className = expectedClass;
               }
-              const expectedTitle = `Chunk #${i}: ${info.stateLabel} (Retries: ${info.retries})`;
+              const expectedTitle = `Window #${i}: ${info.stateLabel} (Retries: ${info.retries})`;
               if (cell.title !== expectedTitle) {
                 cell.title = expectedTitle;
               }
@@ -771,14 +765,13 @@
               }
             }
           } else {
-            // Number of chunks changed, rebuild grid and preserve scroll
             const prevScroll = grid.scrollTop;
             let chunkGridHtml = '';
             for (let i = 0; i < totalChunks; i++) {
               const info = getChunkInfo(i);
               const retryBadgeHtml = info.retries > 0 ? `<span class="chunk-retry-badge" title="${info.retries} Retries">x${info.retries}</span>` : '';
               chunkGridHtml += `
-                <div class="chunk-cell ${info.cellClass}" title="Chunk #${i}: ${info.stateLabel} (Retries: ${info.retries})">
+                <div class="chunk-cell ${info.cellClass}" title="Window #${i}: ${info.stateLabel} (Retries: ${info.retries})">
                   <span>#${i}</span>
                   ${retryBadgeHtml}
                 </div>
@@ -789,7 +782,6 @@
           }
         }
 
-        // Update error callout and toolbar if status changed
         const lastStatus = card.getAttribute('data-last-status');
         if (lastStatus !== job.status) {
           card.setAttribute('data-last-status', job.status);
@@ -810,7 +802,6 @@
           }
         }
       } else {
-        // --- FIRST RENDER OF THIS CARD ---
         card = document.createElement('div');
         card.className = `transfer-job-item status-${statusLower}`;
         card.setAttribute('data-job-fileid', job.fileId);
@@ -822,7 +813,7 @@
           const info = getChunkInfo(i);
           const retryBadgeHtml = info.retries > 0 ? `<span class="chunk-retry-badge" title="${info.retries} Retries">x${info.retries}</span>` : '';
           chunkGridHtml += `
-            <div class="chunk-cell ${info.cellClass}" title="Chunk #${i}: ${info.stateLabel} (Retries: ${info.retries})">
+            <div class="chunk-cell ${info.cellClass}" title="Window #${i}: ${info.stateLabel} (Retries: ${info.retries})">
               <span>#${i}</span>
               ${retryBadgeHtml}
             </div>
@@ -837,6 +828,8 @@
             <span>${sanitizeHtml(job.errorMessage)}</span>
           </div>
         ` : '';
+
+        const swarmPeersCount = job.swarmPeersCount || 1;
 
         card.innerHTML = `
           <div class="job-header-row">
@@ -858,15 +851,15 @@
               <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
                 <span class="mono">${formatBytes(job.bytesDownloaded || 0)} / ${formatBytes(job.totalBytes || job.totalSize || (totalChunks * 1024 * 1024))}</span>
                 ${job.status === 'DOWNLOADING' ? `<span class="transfer-speed-chip mono">${((job.speedBytesPerSec || 0) / (1024 * 1024)).toFixed(2)} MB/s</span>` : ''}
-                ${job.status === 'DOWNLOADING' ? `<span class="streaming-lanes-badge"><span class="pulse-dot"></span>${job.activeLanes || (job.status === 'DOWNLOADING' ? 4 : 0)} Parallel Lanes</span>` : ''}
-                ${job.status === 'COMPLETED' ? `<span class="badge badge-success mono" style="font-size:0.68rem;">ZERO-CHUNKING STREAMED</span>` : ''}
+                ${job.status === 'DOWNLOADING' ? `<span class="streaming-lanes-badge"><span class="pulse-dot"></span>${job.activeLanes || (job.status === 'DOWNLOADING' ? 4 : 0)} Lanes (${swarmPeersCount} Swarm Peers)</span>` : ''}
+                ${job.status === 'COMPLETED' ? `<span class="badge badge-success mono" style="font-size:0.68rem;">ZERO-CHUNKING STREAMED (${swarmPeersCount} PEER SWARM)</span>` : ''}
               </div>
               <span class="mono" style="font-weight:600;">${progressFormatted}%</span>
             </div>
           </div>
 
           <div class="chunk-matrix-section">
-            <span class="chunk-matrix-label">Chunk Assembly Stream (${totalChunks} Total)</span>
+            <span class="chunk-matrix-label">Virtual Stream Windows (${totalChunks} Total)</span>
             <div class="chunk-ribbon-grid">
               ${chunkGridHtml}
             </div>
@@ -946,7 +939,7 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Action: Share & Chunk Local File
+  // Action: Share & Register Local File (Zero-Chunking + O(1) RAM Indexing)
   // ---------------------------------------------------------------------------
   async function handleShareFile(e) {
     e.preventDefault();
@@ -963,13 +956,12 @@
       <svg class="icon spin-active" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
         <path d="M3 12a9 9 0 0 1 15-6.7L21 8"/><path d="M21 3v5h-5"/>
       </svg>
-      <span>Chunking File...</span>
+      <span>Indexing SHA-256...</span>
     `;
 
     try {
       let resp, data;
 
-      // If user dropped or selected a file via browser file API, upload as multipart
       if (STATE.selectedUploadFile && STATE.selectedUploadFile.name === filePath) {
         const formData = new FormData();
         formData.append('file', STATE.selectedUploadFile);
@@ -980,7 +972,6 @@
           body: formData
         });
       } else {
-        // Otherwise, user specified a local file path on the node server host
         const url = `${CONFIG.apiBase}/api/files/share?filePath=${encodeURIComponent(filePath)}&ownerPeerId=${encodeURIComponent(ownerPeerId)}`;
         resp = await fetch(url, { method: 'POST' });
       }
@@ -988,14 +979,15 @@
       data = await resp.json();
 
       if (resp.ok && data.status === 'SHARED') {
-        showToast('success', 'File Sliced & Shared', `Successfully partitioned "${data.fileName}" into ${data.totalChunks} 1MB chunks.`);
+        showToast('success', 'File Indexed & Seeded', `Registered "${data.fileName}" in O(1) RAM catalog with zero disk-chunking overhead.`);
         appendTerminalLog(`FILE SHARE: ${data.fileName}`, data);
         DOM.shareFilePathInput.value = '';
         STATE.selectedUploadFile = null;
         if (DOM.dropzoneFileInput) DOM.dropzoneFileInput.value = '';
         await fetchSharedFiles();
+        await fetchTelemetry();
       } else {
-        const errorMsg = data.message || data.error || 'Failed to split and register file.';
+        const errorMsg = data.message || data.error || 'Failed to register file.';
         showToast('error', 'File Share Failed', errorMsg);
         appendTerminalLog('FILE SHARE ERROR', data, true);
       }
@@ -1047,6 +1039,7 @@
         const results = data.results || [];
         appendTerminalLog(`DISTRIBUTED SEARCH: "${query}" (TTL: ${ttl})`, data);
         renderSearchResults(results, query);
+        await fetchTelemetry();
         showToast('info', 'Search Complete', `Found ${results.length} files matching "${query}" across mesh.`);
       } else {
         showToast('error', 'Search Failed', data.message || 'Error executing search.');
@@ -1093,6 +1086,11 @@
       const tr = document.createElement('tr');
       const totalChunks = Math.ceil((res.sizeBytes || 0) / (1024 * 1024)) || 1;
       const endpoint = `${res.sourceHost}:${res.sourcePort}`;
+      const swarmPeers = Array.isArray(res.swarmPeers) ? res.swarmPeers : [];
+      const swarmSize = res.swarmSize || Math.max(1, swarmPeers.length);
+      const swarmBadge = swarmSize > 1
+        ? `<span class="badge badge-success mono" style="margin-left:6px;font-size:0.65rem;">${swarmSize} Swarm Seeders</span>`
+        : '';
 
       tr.innerHTML = `
         <td>
@@ -1105,7 +1103,10 @@
           </div>
         </td>
         <td class="mono">${formatBytes(res.sizeBytes || 0)}</td>
-        <td><span class="badge badge-subtle mono">${sanitizeHtml(res.sourcePeerId || 'peer')}</span></td>
+        <td>
+          <span class="badge badge-subtle mono">${sanitizeHtml(res.sourcePeerId || 'peer')}</span>
+          ${swarmBadge}
+        </td>
         <td class="mono">${sanitizeHtml(endpoint)}</td>
         <td class="td-action">
           <button class="btn btn-sm btn-primary download-result-btn" 
@@ -1116,6 +1117,7 @@
                   data-filehash="${sanitizeHtml(res.fileHash || '')}"
                   data-host="${sanitizeHtml(res.sourceHost)}"
                   data-port="${res.sourcePort}"
+                  data-swarmpeers="${sanitizeHtml(JSON.stringify(swarmPeers))}"
                   type="button">
             <svg class="icon" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/>
@@ -1158,14 +1160,13 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Action: Trigger Download Job
+  // Action: Trigger Parallel Multi-Peer Download Job
   // ---------------------------------------------------------------------------
-  async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort, forceNetwork = false, fileSize = 0, fileHash = '') {
+  async function startDownloadJob(fileId, fileName, totalChunks, sourceHost, sourcePort, forceNetwork = false, fileSize = 0, fileHash = '', swarmPeers = []) {
     try {
       totalChunks = parseInt(totalChunks, 10) || 1;
 
       if (!forceNetwork) {
-        // 1. If file is locally shared on this node and not simulating network transfer, download directly to device
         const existingShared = STATE.sharedFiles.find(f => f.fileId === fileId);
         if (existingShared) {
           showToast('success', 'Local File Available', `Saving "${fileName}" directly to your device...`);
@@ -1173,7 +1174,6 @@
           return;
         }
 
-        // 2. If file has already been downloaded and reassembled on this node, save to device
         const existingJob = STATE.downloadJobs.get(fileId);
         if (existingJob && existingJob.status === 'COMPLETED') {
           showToast('success', 'File Ready on Node', `"${fileName}" is already assembled. Saving to your device...`);
@@ -1182,13 +1182,11 @@
         }
       }
 
-      // Smooth scroll to transfers section
       const transfersPanel = document.getElementById('panelTransfers');
       if (transfersPanel) {
         transfersPanel.scrollIntoView({ behavior: 'smooth', block: 'start' });
       }
 
-      // 3. Optimistic initial render: Show this downloading file in the Chunk Assembly Matrix
       const initialChunkStates = {};
       for (let i = 0; i < totalChunks; i++) {
         initialChunkStates[i] = (i === 0 ? 'DOWNLOADING' : 'PENDING');
@@ -1204,22 +1202,40 @@
         progressPercentage: 0,
         startTime: Date.now(),
         chunkStates: initialChunkStates,
-        chunkRetries: {}
+        chunkRetries: {},
+        swarmPeersCount: Array.isArray(swarmPeers) && swarmPeers.length > 0 ? swarmPeers.length : 1
       };
       STATE.downloadJobs.set(fileId, initialJob);
       renderTransfersList();
 
-      // 4. Mark for auto-download to device once transfer completes
       STATE.pendingDeviceDownloads.add(fileId);
-      showToast('info', 'Transfer Initiated', `Streaming "${fileName}" from ${sourceHost || '127.0.0.1'}:${sourcePort || 9001}... Chunks will assemble in real-time.`);
+      const peerCountDesc = Array.isArray(swarmPeers) && swarmPeers.length > 1
+        ? `${swarmPeers.length} swarm peers in parallel`
+        : `${sourceHost || '127.0.0.1'}:${sourcePort || 9001}`;
+      showToast('info', 'Parallel Stream Initiated', `Streaming "${fileName}" from ${peerCountDesc}...`);
 
-      // Start fast polling immediately to animate chunks
       startFastPolling();
 
       let url = `${CONFIG.apiBase}/api/download/start?fileId=${encodeURIComponent(fileId)}&fileName=${encodeURIComponent(fileName)}&totalChunks=${totalChunks}&sourceHost=${encodeURIComponent(sourceHost || '127.0.0.1')}&sourcePort=${sourcePort || 9001}`;
       if (fileSize > 0) url += `&fileSize=${fileSize}`;
       if (fileHash) url += `&fileHash=${encodeURIComponent(fileHash)}`;
-      const resp = await fetch(url, { method: 'POST' });
+
+      const requestInit = { method: 'POST' };
+      if (Array.isArray(swarmPeers) && swarmPeers.length > 0) {
+        requestInit.headers = { 'Content-Type': 'application/json' };
+        requestInit.body = JSON.stringify({
+          fileId,
+          fileName,
+          fileSize,
+          fileHash,
+          totalChunks,
+          sourceHost: sourceHost || '127.0.0.1',
+          sourcePort: sourcePort || 9001,
+          peers: swarmPeers
+        });
+      }
+
+      const resp = await fetch(url, requestInit);
       const job = await resp.json();
 
       if (resp.ok) {
@@ -1254,7 +1270,6 @@
       showToast('warning', 'Simulating Missing Chunks', `Dropping chunks [${chunksToDrop}] for "${fileName}" to test TCP safeguard failure...`);
       appendTerminalLog(`FAULT INJECTION: ${fileName}`, { fileId, droppedChunks: chunksToDrop, status: 'SIMULATING_FAULT' });
 
-      // Call fault injection endpoint
       const faultUrl = `${CONFIG.apiBase}/api/test/simulate-chunk-fault?fileId=${encodeURIComponent(fileId)}&chunkNos=${encodeURIComponent(chunksToDrop)}`;
       const faultResp = await fetch(faultUrl, { method: 'POST' });
       const faultData = await faultResp.json();
@@ -1266,7 +1281,6 @@
 
       appendTerminalLog(`CHUNKS DROPPED: ${fileName}`, faultData);
 
-      // Start fresh download with forceNetwork = true to stream live chunk assembly
       showToast('info', 'Download Initiated', `Streaming "${fileName}" across TCP with missing chunks. Observe safeguard failure in matrix below.`);
       await startDownloadJob(fileId, fileName, totalChunks, host, port, true);
     } catch (err) {
@@ -1276,14 +1290,13 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Dynamic Polling Controller (1s fast polling during active transfers)
+  // Dynamic Polling Controller
   // ---------------------------------------------------------------------------
   function startFastPolling() {
     if (STATE.activeJobPolling) return;
     STATE.activeJobPolling = true;
     if (DOM.pollIndicator) DOM.pollIndicator.classList.add('pulse-fast');
 
-    // Trigger immediate fetch so we don't wait for the first interval tick
     fetchDownloadJobs();
 
     if (STATE.pollFastTimer) clearInterval(STATE.pollFastTimer);
@@ -1357,9 +1370,9 @@
 
         if (resp.ok) {
           showToast('success', `${name} Passed`, 'Diagnostic output logged in console.');
-          // Refresh local files & jobs as diagnostics might create sample files
           await fetchSharedFiles();
           await fetchDownloadJobs();
+          await fetchTelemetry();
         } else {
           showToast('error', `${name} Failed`, data.message || 'Test returned an error.');
         }
@@ -1409,10 +1422,8 @@
   // Event Bindings & Delegation
   // ---------------------------------------------------------------------------
   function setupEventListeners() {
-    // Theme toggle
     DOM.themeToggleBtn.addEventListener('click', toggleTheme);
 
-    // Refresh controls
     DOM.manualRefreshBtn.addEventListener('click', () => {
       syncAllData();
       showToast('info', 'Node Synchronized', 'Updated files, mesh peers, and transfer states.');
@@ -1433,7 +1444,6 @@
       }
     });
 
-    // Share Form & Sample Chips
     DOM.shareFileForm.addEventListener('submit', handleShareFile);
 
     document.querySelectorAll('.chip-btn').forEach(btn => {
@@ -1451,7 +1461,6 @@
       }
     });
 
-    // Dropzone Drag & Drop
     DOM.fileDropzone.addEventListener('click', () => {
       DOM.dropzoneFileInput.click();
     });
@@ -1489,7 +1498,6 @@
       }
     });
 
-    // Search Form & Clear
     DOM.networkSearchForm.addEventListener('submit', handleNetworkSearch);
 
     DOM.clearSearchBtn.addEventListener('click', () => {
@@ -1504,7 +1512,7 @@
       DOM.clearSearchBtn.hidden = !e.target.value;
     });
 
-    // Delegate "Download from Peer" buttons in Search Results
+    // Delegate "Download from Peer" buttons in Search Results (passes full swarmPeers list for multi-peer parallel streaming)
     DOM.searchResultsTableBody.addEventListener('click', (e) => {
       const btn = e.target.closest('.download-result-btn');
       if (btn) {
@@ -1515,13 +1523,16 @@
         const port = parseInt(btn.getAttribute('data-port'), 10);
         const fileSize = parseInt(btn.getAttribute('data-filesize'), 10) || 0;
         const fileHash = btn.getAttribute('data-filehash') || '';
-        startDownloadJob(fileId, fileName, totalChunks, host, port, false, fileSize, fileHash);
+        let swarmPeers = [];
+        try {
+          const rawSwarm = btn.getAttribute('data-swarmpeers');
+          if (rawSwarm) swarmPeers = JSON.parse(rawSwarm);
+        } catch (ignored) {}
+        startDownloadJob(fileId, fileName, totalChunks, host, port, false, fileSize, fileHash, swarmPeers);
       }
     });
 
-    // Delegate Transfers Card actions ("Save to Device", "Auto-Recover", "Re-Corrupt")
     DOM.transfersCardList.addEventListener('click', async (e) => {
-      // 1. Direct Save to Device button on completed transfer
       const saveBtn = e.target.closest('.save-to-device-btn');
       if (saveBtn) {
         const fileId = saveBtn.getAttribute('data-fileid');
@@ -1531,7 +1542,6 @@
         return;
       }
 
-      // 2. Re-Corrupt File button
       const recorruptBtn = e.target.closest('.recorrupt-transfer-btn');
       if (recorruptBtn) {
         const fileId = recorruptBtn.getAttribute('data-fileid');
@@ -1543,7 +1553,6 @@
         return;
       }
 
-      // 3. Auto-Recover Missing Chunks button
       const btn = e.target.closest('.recover-transfer-btn');
       if (btn) {
         const fileId = btn.getAttribute('data-fileid');
@@ -1585,7 +1594,6 @@
       }
     });
 
-    // Delegate actions in Local Shared Files table ("Download", "Corrupt & Test")
     DOM.sharedFilesTableBody.addEventListener('click', async (e) => {
       const downloadBtn = e.target.closest('.download-shared-btn');
       if (downloadBtn) {
@@ -1626,17 +1634,14 @@
       }
     });
 
-    // Shared Files Filter
     DOM.sharedFilesFilterInput.addEventListener('input', () => {
       renderSharedFilesTable();
     });
 
-    // Zero-Config Discovery: Scan Subnet & Ports
     if (DOM.scanNetworkBtn) {
       DOM.scanNetworkBtn.addEventListener('click', async () => {
         try {
           DOM.scanNetworkBtn.disabled = true;
-          const origHtml = DOM.scanNetworkBtn.innerHTML;
           DOM.scanNetworkBtn.innerHTML = `
             <svg class="icon spin-fast" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
               <path d="M21 12a9 9 0 1 1-6.219-8.56"/>
@@ -1675,7 +1680,6 @@
       });
     }
 
-    // Peer Mesh Drawer Toggle & Submit
     DOM.toggleRegisterPeerBtn.addEventListener('click', () => {
       const isHidden = DOM.registerPeerDrawer.hidden;
       DOM.registerPeerDrawer.hidden = !isHidden;
@@ -1690,9 +1694,7 @@
 
     DOM.registerPeerForm.addEventListener('submit', handleRegisterPeer);
 
-    // Delegate "Ping" and "Remove" buttons on peers
     DOM.peersDynamicList.addEventListener('click', async (e) => {
-      // 1. Remove Peer button
       const removeBtn = e.target.closest('.remove-peer-btn');
       if (removeBtn) {
         const peerId = removeBtn.getAttribute('data-peerid');
@@ -1716,7 +1718,6 @@
         return;
       }
 
-      // 2. Ping Peer button
       const btn = e.target.closest('.ping-peer-btn');
       if (btn) {
         const peerId = btn.getAttribute('data-peerid');
@@ -1726,7 +1727,6 @@
         btn.disabled = true;
         btn.textContent = 'Pinging...';
         try {
-          // Send TCP HELLO ping to the specific peer endpoint
           const resp = await fetch(`${CONFIG.apiBase}/api/test/tcp-hello?host=${encodeURIComponent(host)}&port=${encodeURIComponent(port)}`);
           if (!resp.ok) {
             const errData = await resp.json().catch(() => ({}));
@@ -1745,7 +1745,6 @@
       }
     });
 
-    // Global copy to clipboard buttons delegation
     document.addEventListener('click', (e) => {
       const copyBtn = e.target.closest('[data-copy]');
       if (copyBtn) {
@@ -1754,10 +1753,15 @@
       }
     });
 
-    // Diagnostic Action Buttons
     DOM.btnTestRecovery.addEventListener('click', () => {
       runDiagnostic('Chunk Recovery Simulation', '/api/test/chunk-recovery', DOM.btnTestRecovery);
     });
+
+    if (DOM.btnTestErasure) {
+      DOM.btnTestErasure.addEventListener('click', () => {
+        runDiagnostic('GF(2^8) Reed-Solomon Erasure Recovery', '/api/test/erasure-recovery', DOM.btnTestErasure);
+      });
+    }
 
     DOM.btnTestTcpHello.addEventListener('click', () => {
       runDiagnostic('TCP Framing Handshake', '/api/test/tcp-hello', DOM.btnTestTcpHello);
@@ -1793,7 +1797,6 @@
           appendTerminalLog(`RESTORE CHUNKS: ${target.name}`, data);
           showToast('success', 'Chunks Restored', `Restored dropped chunks to node storage. Triggering TCP recovery...`);
           
-          // Auto-trigger recovery on failed download job if present
           const existingJob = STATE.downloadJobs.get(target.fileId);
           if (existingJob && existingJob.status === 'FAILED') {
             const host = (existingJob.sourceHost && existingJob.sourceHost !== 'undefined') ? existingJob.sourceHost : '127.0.0.1';
@@ -1816,7 +1819,6 @@
       });
     }
 
-    // Terminal Screen actions
     DOM.clearConsoleBtn.addEventListener('click', () => {
       DOM.consoleCode.innerHTML = '// Console cleared. Awaiting protocol events.';
       showToast('info', 'Console Cleared', 'Terminal output buffer was reset.');
@@ -1827,23 +1829,19 @@
       copyToClipboard(text, DOM.copyConsoleBtn);
     });
 
-    // Keyboard Shortcuts
     document.addEventListener('keydown', (e) => {
-      // Shortcut '/' to focus search input (when not already typing in an input/textarea)
       if (e.key === '/' && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
         e.preventDefault();
         DOM.networkSearchInput.focus();
         DOM.networkSearchInput.select();
       }
 
-      // Shortcut 'r' or 'R' to refresh (when not focused in an input)
       if ((e.key === 'r' || e.key === 'R') && !['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) {
         e.preventDefault();
         syncAllData();
         showToast('info', 'Node Synchronized', 'Updated files, mesh peers, and transfer states.');
       }
 
-      // Shortcut 'Escape' to close drawer or clear search
       if (e.key === 'Escape') {
         if (!DOM.registerPeerDrawer.hidden) {
           DOM.registerPeerDrawer.hidden = true;
@@ -1868,12 +1866,17 @@
     appendTerminalLog('P2P Node Console', {
       nodeId: 'peer-1',
       status: 'INITIALIZED',
-      capabilities: ['1MB_CHUNK_SLICING', 'DISTRIBUTED_SEARCH_TTL', 'TCP_FRAMING', 'SELF_HEALING_RECOVERY'],
-      storageRoot: 'peer-data/chunks'
+      capabilities: [
+        'ZERO_CHUNKING_DIRECT_STREAM',
+        'O1_IN_MEMORY_TRIGRAM_INDEX',
+        'UDP_AND_TCP_AUTO_DISCOVERY',
+        'EWMA_MULTI_PEER_PARALLEL_SWARM',
+        'GF256_REED_SOLOMON_AND_CRC32C_FEC'
+      ],
+      storageRoot: 'peer-data'
     });
   }
 
-  // Run on DOM Ready
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', init);
   } else {

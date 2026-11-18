@@ -38,3 +38,9 @@ Thumbs.db
 .project
 .settings/
 .factorypath
+
+# C++ build directories and object files
+core-cpp/bin/
+core-cpp/obj/
+*.o
+*.a

@@ -1,46 +1,29 @@
-# Compiled class files & build directories
-**/target/
-*.class
+# C++ build artifacts
+core-cpp/bin/
+core-cpp/obj/
+*.o
+*.a
+*.dSYM/
 
-# SQLite Database files
+# Runtime peer storage & data
+peer-data/
+**/peer-data/
+*.bin
+**/*.bin
+
+# SQLite database files
 *.db
 *.db-journal
 **/*.db
 **/*.db-journal
 
-# Runtime chunk storage and generated binaries
-**/peer-data/
-peer-data/
-*.bin
-**/*.bin
-
 # Logs
 *.log
 
-# Package / OS files
+# OS & Editor files
 .DS_Store
 Thumbs.db
-
-# IDE and Editor files
 .idea/
-*.iml
 .vscode/
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
 *.sw?
-
-# Node modules (for upcoming frontend)
-**/node_modules/
-**/dist/
-.classpath
-.project
-.settings/
-.factorypath
-
-# C++ build directories and object files
-core-cpp/bin/
-core-cpp/obj/
-*.o
-*.a
+*.iml
